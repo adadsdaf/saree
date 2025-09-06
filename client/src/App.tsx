@@ -2,6 +2,8 @@ import React from 'react';
 import { Router, Route, Switch } from 'wouter';
 import { CartProvider } from '@/context/CartContext';
 import { AuthProvider } from '@/context/AuthContext';
+import { UiSettingsProvider } from '@/context/UiSettingsContext';
+import Layout from '@/components/Layout';
 
 // صفحات العميل
 import HomePage from '@/pages/HomePage';
@@ -28,15 +30,36 @@ import { ProtectedRoute } from '@/components/ProtectedRoute';
 function App() {
   return (
     <AuthProvider>
-      <CartProvider>
-        <Router>
-          <Switch>
-            {/* مسارات العميل */}
-            <Route path="/" component={HomePage} />
-            <Route path="/restaurant/:id" component={RestaurantPage} />
-            <Route path="/cart" component={CartPage} />
-            <Route path="/order/:id" component={OrderTrackingPage} />
-            <Route path="/profile" component={ProfilePage} />
+      <UiSettingsProvider>
+        <CartProvider>
+          <Router>
+            <Switch>
+              {/* مسارات العميل */}
+              <Route path="/">
+                <Layout>
+                  <HomePage />
+                </Layout>
+              </Route>
+              <Route path="/restaurant/:id">
+                <Layout>
+                  <RestaurantPage />
+                </Layout>
+              </Route>
+              <Route path="/cart">
+                <Layout>
+                  <CartPage />
+                </Layout>
+              </Route>
+              <Route path="/order/:id">
+                <Layout>
+                  <OrderTrackingPage />
+                </Layout>
+              </Route>
+              <Route path="/profile">
+                <Layout>
+                  <ProfilePage />
+                </Layout>
+              </Route>
 
             {/* مسارات الإدارة */}
             <Route path="/admin-login" component={AdminLoginPage} />
@@ -93,9 +116,10 @@ function App() {
                 </div>
               </div>
             </Route>
-          </Switch>
-        </Router>
-      </CartProvider>
+            </Switch>
+          </Router>
+        </CartProvider>
+      </UiSettingsProvider>
     </AuthProvider>
   );
 }

@@ -1,17 +1,14 @@
 import type { Express } from "express";
 import { createServer, type Server } from "http";
-import { dbStorage } from "./db";
-import { authService } from "./auth";
+import { dbStorage } from "./db.js";
+import { authService } from "./auth.js";
 import { 
   insertRestaurantSchema, 
   insertMenuItemSchema, 
   insertOrderSchema, 
-  insertDriverSchema, 
-  insertCategorySchema, 
   insertSpecialOfferSchema,
-  insertUiSettingsSchema
-} from "@shared/schema";
-import { randomUUID } from "crypto";
+  insertCategorySchema
+} from "../shared/schema.js";
 
 export async function registerRoutes(app: Express): Promise<Server> {
   
@@ -24,25 +21,51 @@ export async function registerRoutes(app: Express): Promise<Server> {
       const { email, password } = req.body;
       
       if (!email || !password) {
-        return res.status(400).json({ message: "البريد الإلكتروني وكلمة المرور مطلوبان" });
+        return res.status(400).json({ error: "البريد الإلكتروني وكلمة المرور مطلوبان" });
       }
 
-      // Use AuthService for login
       const loginResult = await authService.loginAdmin(email, password);
       
       if (loginResult.success) {
         res.json({
           success: true,
           token: loginResult.token,
-          userType: loginResult.userType,
+          admin: loginResult.admin,
           message: "تم تسجيل الدخول بنجاح"
         });
       } else {
-        res.status(401).json({ message: loginResult.message });
+        res.status(401).json({ error: loginResult.message });
       }
     } catch (error) {
       console.error('خطأ في تسجيل الدخول:', error);
-      res.status(500).json({ message: "خطأ في الخادم" });
+      res.status(500).json({ error: "خطأ في الخادم" });
+    }
+  });
+
+  // Driver Authentication Routes
+  app.post("/api/driver/login", async (req, res) => {
+    try {
+      const { phone, password } = req.body;
+      
+      if (!phone || !password) {
+        return res.status(400).json({ error: "رقم الهاتف وكلمة المرور مطلوبان" });
+      }
+
+      const loginResult = await authService.loginDriver(phone, password);
+      
+      if (loginResult.success) {
+        res.json({
+          success: true,
+          token: loginResult.token,
+          driver: loginResult.driver,
+          message: "تم تسجيل الدخول بنجاح"
+        });
+      } else {
+        res.status(401).json({ error: loginResult.message });
+      }
+    } catch (error) {
+      console.error('خطأ في تسجيل دخول السائق:', error);
+      res.status(500).json({ error: "خطأ في الخادم" });
     }
   });
 
@@ -54,7 +77,19 @@ export async function registerRoutes(app: Express): Promise<Server> {
       }
       res.json({ message: "تم تسجيل الخروج بنجاح" });
     } catch (error) {
-      res.status(500).json({ message: "خطأ في الخادم" });
+      res.status(500).json({ error: "خطأ في الخادم" });
+    }
+  });
+
+  app.post("/api/driver/logout", async (req, res) => {
+    try {
+      const { token } = req.body;
+      if (token) {
+        await dbStorage.deleteAdminSession(token);
+      }
+      res.json({ message: "تم تسجيل الخروج بنجاح" });
+    } catch (error) {
+      res.status(500).json({ error: "خطأ في الخادم" });
     }
   });
 
@@ -63,7 +98,7 @@ export async function registerRoutes(app: Express): Promise<Server> {
       const token = req.headers.authorization?.replace("Bearer ", "");
       
       if (!token) {
-        return res.status(401).json({ message: "رمز التحقق مطلوب" });
+        return res.status(401).json({ error: "رمز التحقق مطلوب" });
       }
 
       const validation = await authService.validateSession(token);
@@ -75,11 +110,11 @@ export async function registerRoutes(app: Express): Promise<Server> {
           adminId: validation.adminId
         });
       } else {
-        res.status(401).json({ message: "انتهت صلاحية الجلسة" });
+        res.status(401).json({ error: "انتهت صلاحية الجلسة" });
       }
     } catch (error) {
       console.error('خطأ في التحقق:', error);
-      res.status(500).json({ message: "خطأ في الخادم" });
+      res.status(500).json({ error: "خطأ في الخادم" });
     }
   });
 
@@ -89,7 +124,7 @@ export async function registerRoutes(app: Express): Promise<Server> {
       const categories = await dbStorage.getCategories();
       res.json(categories);
     } catch (error) {
-      res.status(500).json({ message: "Failed to fetch categories" });
+      res.status(500).json({ error: "Failed to fetch categories" });
     }
   });
 
@@ -99,7 +134,7 @@ export async function registerRoutes(app: Express): Promise<Server> {
       const category = await dbStorage.createCategory(validatedData);
       res.status(201).json(category);
     } catch (error) {
-      res.status(400).json({ message: "Invalid category data" });
+      res.status(400).json({ error: "Invalid category data" });
     }
   });
 
@@ -109,11 +144,11 @@ export async function registerRoutes(app: Express): Promise<Server> {
       const validatedData = insertCategorySchema.partial().parse(req.body);
       const category = await dbStorage.updateCategory(id, validatedData);
       if (!category) {
-        return res.status(404).json({ message: "Category not found" });
+        return res.status(404).json({ error: "Category not found" });
       }
       res.json(category);
     } catch (error) {
-      res.status(400).json({ message: "Invalid category data" });
+      res.status(400).json({ error: "Invalid category data" });
     }
   });
 
@@ -122,11 +157,11 @@ export async function registerRoutes(app: Express): Promise<Server> {
       const { id } = req.params;
       const success = await dbStorage.deleteCategory(id);
       if (!success) {
-        return res.status(404).json({ message: "Category not found" });
+        return res.status(404).json({ error: "Category not found" });
       }
       res.status(204).send();
     } catch (error) {
-      res.status(500).json({ message: "Failed to delete category" });
+      res.status(500).json({ error: "Failed to delete category" });
     }
   });
 
@@ -144,7 +179,7 @@ export async function registerRoutes(app: Express): Promise<Server> {
       
       res.json(restaurants);
     } catch (error) {
-      res.status(500).json({ message: "Failed to fetch restaurants" });
+      res.status(500).json({ error: "Failed to fetch restaurants" });
     }
   });
 
@@ -153,11 +188,11 @@ export async function registerRoutes(app: Express): Promise<Server> {
       const { id } = req.params;
       const restaurant = await dbStorage.getRestaurant(id);
       if (!restaurant) {
-        return res.status(404).json({ message: "Restaurant not found" });
+        return res.status(404).json({ error: "Restaurant not found" });
       }
       res.json(restaurant);
     } catch (error) {
-      res.status(500).json({ message: "Failed to fetch restaurant" });
+      res.status(500).json({ error: "Failed to fetch restaurant" });
     }
   });
 
@@ -167,7 +202,7 @@ export async function registerRoutes(app: Express): Promise<Server> {
       const restaurant = await dbStorage.createRestaurant(validatedData);
       res.status(201).json(restaurant);
     } catch (error) {
-      res.status(400).json({ message: "Invalid restaurant data" });
+      res.status(400).json({ error: "Invalid restaurant data" });
     }
   });
 
@@ -177,11 +212,11 @@ export async function registerRoutes(app: Express): Promise<Server> {
       const validatedData = insertRestaurantSchema.partial().parse(req.body);
       const restaurant = await dbStorage.updateRestaurant(id, validatedData);
       if (!restaurant) {
-        return res.status(404).json({ message: "Restaurant not found" });
+        return res.status(404).json({ error: "Restaurant not found" });
       }
       res.json(restaurant);
     } catch (error) {
-      res.status(400).json({ message: "Invalid restaurant data" });
+      res.status(400).json({ error: "Invalid restaurant data" });
     }
   });
 
@@ -190,11 +225,11 @@ export async function registerRoutes(app: Express): Promise<Server> {
       const { id } = req.params;
       const success = await dbStorage.deleteRestaurant(id);
       if (!success) {
-        return res.status(404).json({ message: "Restaurant not found" });
+        return res.status(404).json({ error: "Restaurant not found" });
       }
       res.status(204).send();
     } catch (error) {
-      res.status(500).json({ message: "Failed to delete restaurant" });
+      res.status(500).json({ error: "Failed to delete restaurant" });
     }
   });
 
@@ -205,7 +240,7 @@ export async function registerRoutes(app: Express): Promise<Server> {
       const menuItems = await dbStorage.getMenuItems(restaurantId);
       res.json(menuItems);
     } catch (error) {
-      res.status(500).json({ message: "Failed to fetch menu items" });
+      res.status(500).json({ error: "Failed to fetch menu items" });
     }
   });
 
@@ -215,7 +250,7 @@ export async function registerRoutes(app: Express): Promise<Server> {
       const menuItem = await dbStorage.createMenuItem(validatedData);
       res.status(201).json(menuItem);
     } catch (error) {
-      res.status(400).json({ message: "Invalid menu item data" });
+      res.status(400).json({ error: "Invalid menu item data" });
     }
   });
 
@@ -225,11 +260,11 @@ export async function registerRoutes(app: Express): Promise<Server> {
       const validatedData = insertMenuItemSchema.partial().parse(req.body);
       const menuItem = await dbStorage.updateMenuItem(id, validatedData);
       if (!menuItem) {
-        return res.status(404).json({ message: "Menu item not found" });
+        return res.status(404).json({ error: "Menu item not found" });
       }
       res.json(menuItem);
     } catch (error) {
-      res.status(400).json({ message: "Invalid menu item data" });
+      res.status(400).json({ error: "Invalid menu item data" });
     }
   });
 
@@ -238,18 +273,18 @@ export async function registerRoutes(app: Express): Promise<Server> {
       const { id } = req.params;
       const success = await dbStorage.deleteMenuItem(id);
       if (!success) {
-        return res.status(404).json({ message: "Menu item not found" });
+        return res.status(404).json({ error: "Menu item not found" });
       }
       res.status(204).send();
     } catch (error) {
-      res.status(500).json({ message: "Failed to delete menu item" });
+      res.status(500).json({ error: "Failed to delete menu item" });
     }
   });
 
   // Orders
   app.get("/api/orders", async (req, res) => {
     try {
-      const { restaurantId } = req.query;
+      const { restaurantId, status } = req.query;
       let orders;
       
       if (restaurantId) {
@@ -258,9 +293,14 @@ export async function registerRoutes(app: Express): Promise<Server> {
         orders = await dbStorage.getOrders();
       }
       
+      // Filter by status if provided
+      if (status && status !== 'all') {
+        orders = orders.filter(order => order.status === status);
+      }
+      
       res.json(orders);
     } catch (error) {
-      res.status(500).json({ message: "Failed to fetch orders" });
+      res.status(500).json({ error: "Failed to fetch orders" });
     }
   });
 
@@ -269,11 +309,11 @@ export async function registerRoutes(app: Express): Promise<Server> {
       const { id } = req.params;
       const order = await dbStorage.getOrder(id);
       if (!order) {
-        return res.status(404).json({ message: "Order not found" });
+        return res.status(404).json({ error: "Order not found" });
       }
       res.json(order);
     } catch (error) {
-      res.status(500).json({ message: "Failed to fetch order" });
+      res.status(500).json({ error: "Failed to fetch order" });
     }
   });
 
@@ -283,7 +323,7 @@ export async function registerRoutes(app: Express): Promise<Server> {
       const order = await dbStorage.createOrder(validatedData);
       res.status(201).json(order);
     } catch (error) {
-      res.status(400).json({ message: "Invalid order data" });
+      res.status(400).json({ error: "Invalid order data" });
     }
   });
 
@@ -293,11 +333,11 @@ export async function registerRoutes(app: Express): Promise<Server> {
       const validatedData = insertOrderSchema.partial().parse(req.body);
       const order = await dbStorage.updateOrder(id, validatedData);
       if (!order) {
-        return res.status(404).json({ message: "Order not found" });
+        return res.status(404).json({ error: "Order not found" });
       }
       res.json(order);
     } catch (error) {
-      res.status(400).json({ message: "Invalid order data" });
+      res.status(400).json({ error: "Invalid order data" });
     }
   });
 
@@ -315,7 +355,7 @@ export async function registerRoutes(app: Express): Promise<Server> {
       
       res.json(drivers);
     } catch (error) {
-      res.status(500).json({ message: "Failed to fetch drivers" });
+      res.status(500).json({ error: "Failed to fetch drivers" });
     }
   });
 
@@ -324,35 +364,35 @@ export async function registerRoutes(app: Express): Promise<Server> {
       const { id } = req.params;
       const driver = await dbStorage.getDriver(id);
       if (!driver) {
-        return res.status(404).json({ message: "Driver not found" });
+        return res.status(404).json({ error: "Driver not found" });
       }
       res.json(driver);
     } catch (error) {
-      res.status(500).json({ message: "Failed to fetch driver" });
+      res.status(500).json({ error: "Failed to fetch driver" });
     }
   });
 
   app.post("/api/drivers", async (req, res) => {
     try {
-      const validatedData = insertDriverSchema.parse(req.body);
-      const driver = await dbStorage.createDriver(validatedData);
+      const driverData = { ...req.body, userType: "driver" };
+      const driver = await dbStorage.createDriver(driverData);
       res.status(201).json(driver);
     } catch (error) {
-      res.status(400).json({ message: "Invalid driver data" });
+      res.status(400).json({ error: "Invalid driver data" });
     }
   });
 
   app.put("/api/drivers/:id", async (req, res) => {
     try {
       const { id } = req.params;
-      const validatedData = insertDriverSchema.partial().parse(req.body);
-      const driver = await dbStorage.updateDriver(id, validatedData);
+      const updateData = req.body;
+      const driver = await dbStorage.updateDriver(id, updateData);
       if (!driver) {
-        return res.status(404).json({ message: "Driver not found" });
+        return res.status(404).json({ error: "Driver not found" });
       }
       res.json(driver);
     } catch (error) {
-      res.status(400).json({ message: "Invalid driver data" });
+      res.status(400).json({ error: "Invalid driver data" });
     }
   });
 
@@ -361,11 +401,11 @@ export async function registerRoutes(app: Express): Promise<Server> {
       const { id } = req.params;
       const success = await dbStorage.deleteDriver(id);
       if (!success) {
-        return res.status(404).json({ message: "Driver not found" });
+        return res.status(404).json({ error: "Driver not found" });
       }
       res.status(204).send();
     } catch (error) {
-      res.status(500).json({ message: "Failed to delete driver" });
+      res.status(500).json({ error: "Failed to delete driver" });
     }
   });
 
@@ -383,7 +423,7 @@ export async function registerRoutes(app: Express): Promise<Server> {
       
       res.json(offers);
     } catch (error) {
-      res.status(500).json({ message: "Failed to fetch special offers" });
+      res.status(500).json({ error: "Failed to fetch special offers" });
     }
   });
 
@@ -393,7 +433,7 @@ export async function registerRoutes(app: Express): Promise<Server> {
       const offer = await dbStorage.createSpecialOffer(validatedData);
       res.status(201).json(offer);
     } catch (error) {
-      res.status(400).json({ message: "Invalid special offer data" });
+      res.status(400).json({ error: "Invalid special offer data" });
     }
   });
 
@@ -403,11 +443,11 @@ export async function registerRoutes(app: Express): Promise<Server> {
       const validatedData = insertSpecialOfferSchema.partial().parse(req.body);
       const offer = await dbStorage.updateSpecialOffer(id, validatedData);
       if (!offer) {
-        return res.status(404).json({ message: "Special offer not found" });
+        return res.status(404).json({ error: "Special offer not found" });
       }
       res.json(offer);
     } catch (error) {
-      res.status(400).json({ message: "Invalid special offer data" });
+      res.status(400).json({ error: "Invalid special offer data" });
     }
   });
 
@@ -416,11 +456,11 @@ export async function registerRoutes(app: Express): Promise<Server> {
       const { id } = req.params;
       const success = await dbStorage.deleteSpecialOffer(id);
       if (!success) {
-        return res.status(404).json({ message: "Special offer not found" });
+        return res.status(404).json({ error: "Special offer not found" });
       }
       res.status(204).send();
     } catch (error) {
-      res.status(500).json({ message: "Failed to delete special offer" });
+      res.status(500).json({ error: "Failed to delete special offer" });
     }
   });
 
@@ -431,7 +471,7 @@ export async function registerRoutes(app: Express): Promise<Server> {
       res.json(settings);
     } catch (error) {
       console.error('خطأ في جلب إعدادات الواجهة:', error);
-      res.status(500).json({ message: "Failed to fetch UI settings" });
+      res.status(500).json({ error: "Failed to fetch UI settings" });
     }
   });
 
@@ -440,12 +480,12 @@ export async function registerRoutes(app: Express): Promise<Server> {
       const { key } = req.params;
       const setting = await dbStorage.getUiSetting(key);
       if (!setting) {
-        return res.status(404).json({ message: "الإعداد غير موجود" });
+        return res.status(404).json({ error: "الإعداد غير موجود" });
       }
       res.json(setting);
     } catch (error) {
       console.error('خطأ في جلب إعداد الواجهة:', error);
-      res.status(500).json({ message: "Failed to fetch UI setting" });
+      res.status(500).json({ error: "Failed to fetch UI setting" });
     }
   });
 
@@ -455,18 +495,18 @@ export async function registerRoutes(app: Express): Promise<Server> {
       const { value } = req.body;
       
       if (!value) {
-        return res.status(400).json({ message: "قيمة الإعداد مطلوبة" });
+        return res.status(400).json({ error: "قيمة الإعداد مطلوبة" });
       }
 
       const updated = await dbStorage.updateUiSetting(key, value);
       if (!updated) {
-        return res.status(404).json({ message: "الإعداد غير موجود" });
+        return res.status(404).json({ error: "الإعداد غير موجود" });
       }
       
       res.json(updated);
     } catch (error) {
       console.error('خطأ في تحديث إعداد الواجهة:', error);
-      res.status(500).json({ message: "Failed to update UI setting" });
+      res.status(500).json({ error: "Failed to update UI setting" });
     }
   });
 

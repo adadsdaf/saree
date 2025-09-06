@@ -343,6 +343,10 @@ export const selectReviewSchema = createSelectSchema(reviews);
 // أنواع TypeScript
 export type AdminUser = typeof adminUsers.$inferSelect;
 export type NewAdminUser = typeof adminUsers.$inferInsert;
+export type InsertAdminUser = NewAdminUser;
+export type AdminSession = typeof adminSessions.$inferSelect;
+export type NewAdminSession = typeof adminSessions.$inferInsert;
+export type InsertAdminSession = NewAdminSession;
 
 export type Category = typeof categories.$inferSelect;
 export type NewCategory = typeof categories.$inferInsert;

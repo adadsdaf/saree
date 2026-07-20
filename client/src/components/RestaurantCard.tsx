@@ -1,6 +1,6 @@
 import { Card, CardContent } from '@/components/ui/card';
 import { Badge } from '@/components/ui/badge';
-import { Star, Clock } from 'lucide-react';
+import { Star, Clock, MapPin } from 'lucide-react';
 import type { Restaurant } from '@shared/schema';
 import { getRestaurantStatus } from '../utils/restaurantHours';
 import { useUiSettings } from '@/context/UiSettingsContext';
@@ -16,71 +16,127 @@ export default function RestaurantCard({ restaurant, onClick }: RestaurantCardPr
   
   return (
     <Card 
-      className={`overflow-hidden shadow-sm hover:shadow-md transition-shadow cursor-pointer ${!status.isOpen ? 'opacity-75' : ''}`}
+      className={`group relative overflow-hidden rounded-xl border-0 bg-white dark:bg-gray-900 shadow-lg hover:shadow-2xl transition-all duration-300 cursor-pointer transform hover:-translate-y-1 ${!status.isOpen ? 'opacity-80' : ''}`}
       onClick={onClick}
       data-testid={`restaurant-card-${restaurant.id}`}
     >
-      <img
-        src={restaurant.image}
-        alt={restaurant.name}
-        className="w-full h-48 object-cover"
-      />
-      <CardContent className="p-4">
-        <div className="flex justify-between items-start mb-2">
-          <h4 className="font-bold text-foreground" data-testid={`restaurant-name-${restaurant.id}`}>
-            {restaurant.name}
-          </h4>
+      {/* Image Container with Overlay */}
+      <div className="relative h-52 overflow-hidden">
+        <img
+          src={restaurant.image}
+          alt={restaurant.name}
+          className="w-full h-full object-cover transition-transform duration-300 group-hover:scale-105"
+        />
+        
+        {/* Gradient Overlay */}
+        <div className="absolute inset-0 bg-gradient-to-t from-black/20 via-transparent to-transparent" />
+        
+        {/* Status Badge - Positioned on Image */}
+        <div className="absolute top-3 left-3">
           <Badge 
-            variant={status.isOpen ? "default" : "destructive"}
-            className={status.statusColor === 'green' ? "bg-green-100 text-green-800 hover:bg-green-100" : 
-                      status.statusColor === 'yellow' ? "bg-yellow-100 text-yellow-800 hover:bg-yellow-100" : ""}
+            className={`px-3 py-1 text-xs font-medium rounded-full backdrop-blur-sm border-0 ${
+              status.statusColor === 'green' 
+                ? 'bg-emerald-500/90 text-white shadow-lg' 
+                : status.statusColor === 'yellow'
+                ? 'bg-amber-500/90 text-white shadow-lg'
+                : 'bg-red-500/90 text-white shadow-lg'
+            }`}
             data-testid={`restaurant-status-${restaurant.id}`}
           >
-            {status.isOpen ? 'مفتوح' : 'مغلق'}
+            {status.isOpen ? '🟢 مفتوح' : '🔴 مغلق'}
           </Badge>
         </div>
-        
-        {/* Restaurant description */}
-        {isFeatureEnabled('show_restaurant_description') && restaurant.description && (
-          <div className="mb-2">
-            <p className="text-xs text-muted-foreground">{restaurant.description}</p>
+
+        {/* Featured Badge */}
+        {restaurant.isFeatured && (
+          <div className="absolute top-3 right-3">
+            <Badge className="bg-orange-500/90 text-white text-xs px-3 py-1 rounded-full backdrop-blur-sm border-0 shadow-lg">
+              ⭐ مميز
+            </Badge>
           </div>
         )}
-        
-        {/* Restaurant status message */}
-        <div className="mb-2">
-          <p className={`text-xs ${status.statusColor === 'green' ? 'text-green-600' : 
-                                    status.statusColor === 'yellow' ? 'text-yellow-600' : 'text-red-600'}`}>
+      </div>
+
+      <CardContent className="p-5 space-y-4">
+        {/* Header */}
+        <div className="space-y-2">
+          <h4 className="font-bold text-lg text-gray-900 dark:text-white line-clamp-1 group-hover:text-orange-600 transition-colors" data-testid={`restaurant-name-${restaurant.id}`}>
+            {restaurant.name}
+          </h4>
+          
+          {/* Restaurant description */}
+          {isFeatureEnabled('show_restaurant_description') && restaurant.description && (
+            <p className="text-sm text-gray-600 dark:text-gray-300 line-clamp-2 leading-relaxed">
+              {restaurant.description}
+            </p>
+          )}
+        </div>
+
+        {/* Status Message */}
+        <div className="flex items-center gap-2">
+          <div className={`w-2 h-2 rounded-full ${
+            status.statusColor === 'green' ? 'bg-emerald-400' : 
+            status.statusColor === 'yellow' ? 'bg-amber-400' : 'bg-red-400'
+          }`} />
+          <p className={`text-sm font-medium ${
+            status.statusColor === 'green' ? 'text-emerald-600 dark:text-emerald-400' : 
+            status.statusColor === 'yellow' ? 'text-amber-600 dark:text-amber-400' : 
+            'text-red-600 dark:text-red-400'
+          }`}>
             {status.message}
           </p>
         </div>
         
-        <div className="flex items-center gap-4 text-sm text-muted-foreground mb-3">
-          {isFeatureEnabled('show_ratings') && (
-            <div className="flex items-center gap-1">
-              <Star className="h-4 w-4 text-yellow-500" />
-              <span data-testid={`restaurant-rating-${restaurant.id}`}>{restaurant.rating}</span>
-              <span>({restaurant.reviewCount} تقييم)</span>
-            </div>
-          )}
-          {isFeatureEnabled('show_delivery_time') && (
-            <div className="flex items-center gap-1">
-              <Clock className="h-4 w-4" />
-              <span data-testid={`restaurant-delivery-time-${restaurant.id}`}>{restaurant.deliveryTime}</span>
-            </div>
-          )}
+        {/* Metrics Row */}
+        <div className="flex items-center justify-between text-sm">
+          <div className="flex items-center gap-4">
+            {isFeatureEnabled('show_ratings') && (
+              <div className="flex items-center gap-1.5 text-gray-600 dark:text-gray-300">
+                <Star className="h-4 w-4 text-amber-400 fill-amber-400" />
+                <span className="font-medium text-gray-900 dark:text-white" data-testid={`restaurant-rating-${restaurant.id}`}>
+                  {restaurant.rating}
+                </span>
+                <span className="text-xs">({restaurant.reviewCount})</span>
+              </div>
+            )}
+            
+            {isFeatureEnabled('show_delivery_time') && (
+              <div className="flex items-center gap-1.5 text-gray-600 dark:text-gray-300">
+                <Clock className="h-4 w-4" />
+                <span data-testid={`restaurant-delivery-time-${restaurant.id}`}>
+                  {restaurant.deliveryTime}
+                </span>
+              </div>
+            )}
+          </div>
         </div>
         
-        <div className="flex justify-between items-center">
-          {isFeatureEnabled('show_minimum_order') && (
-            <span className="text-sm text-muted-foreground">
-              الحد الأدنى: {restaurant.minimumOrder} ريال
+        {/* Footer Info */}
+        <div className="flex items-center justify-between pt-2 border-t border-gray-100 dark:border-gray-800">
+          <div className="space-y-1">
+            {isFeatureEnabled('show_minimum_order') && (
+              <div className="flex items-center gap-1.5 text-xs text-gray-500 dark:text-gray-400">
+                <span>الحد الأدنى: <span className="font-medium text-gray-700 dark:text-gray-300">{restaurant.minimumOrder} ريال</span></span>
+              </div>
+            )}
+          </div>
+          
+          <div className="flex items-center gap-1.5">
+            <MapPin className="h-4 w-4 text-orange-500" />
+            <span className="text-sm font-semibold text-orange-600 dark:text-orange-400">
+              {restaurant.deliveryFee} ريال
             </span>
-          )}
-          <span className="text-sm text-primary font-medium">
-            رسوم التوصيل: {restaurant.deliveryFee} ريال
-          </span>
+          </div>
         </div>
+
+        {/* New Badge for new restaurants */}
+        {restaurant.isNew && (
+          <div className="absolute top-16 right-3">
+            <Badge className="bg-blue-500/90 text-white text-xs px-2 py-1 rounded-full backdrop-blur-sm border-0 shadow-lg">
+              جديد
+            </Badge>
+          </div>
+        )}
       </CardContent>
     </Card>
   );

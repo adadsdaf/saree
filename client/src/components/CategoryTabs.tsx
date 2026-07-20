@@ -1,7 +1,6 @@
 import { Button } from '@/components/ui/button';
 import { useQuery } from '@tanstack/react-query';
 import type { Category } from '@shared/schema';
-import { useUiSettings } from '@/context/UiSettingsContext';
 
 interface CategoryTabsProps {
   selectedCategory: string | null;
@@ -12,12 +11,6 @@ export default function CategoryTabs({ selectedCategory, onCategoryChange }: Cat
   const { data: categories, isLoading } = useQuery<Category[]>({
     queryKey: ['/api/categories'],
   });
-  const { isFeatureEnabled } = useUiSettings();
-
-  // لا تعرض المكون إذا كان معطل
-  if (!isFeatureEnabled('show_categories')) {
-    return null;
-  }
 
   if (isLoading) {
     return (

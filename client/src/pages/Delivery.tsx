@@ -1,6 +1,6 @@
-import { useState } from 'react';
+import { useState, useEffect } from 'react';
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query';
-import { MapPin, Package, Phone, Check, X, Navigation, DollarSign, Clock, User, Star } from 'lucide-react';
+import { MapPin, Package, Phone, Check, X, Navigation, DollarSign, Clock, User, Star, LogOut } from 'lucide-react';
 import { Button } from '@/components/ui/button';
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card';
 import { Badge } from '@/components/ui/badge';
@@ -8,40 +8,74 @@ import { Switch } from '@/components/ui/switch';
 import { Label } from '@/components/ui/label';
 import { useToast } from '@/hooks/use-toast';
 import { apiRequest } from '@/lib/queryClient';
+import { useAuth } from '@/context/AuthContext';
+import { useLocation } from 'wouter';
 import type { Order, Driver } from '@shared/schema';
 
 export default function Delivery() {
   const { toast } = useToast();
+  const { logout, user } = useAuth();
+  const [, setLocation] = useLocation();
   const queryClient = useQueryClient();
   
-  // Mock driver data - in real app this would come from authentication
-  const [currentDriver] = useState<Driver>({
-    id: '1',
-    name: 'أحمد محمد',
-    phone: '+967771234567',
-    password: '$2b$10$92IXUNpkjO0rOQ5byMi.Ye4oKoEa3Ro9llC/.og/at2.uheWG/igi',
-    isAvailable: true,
-    isActive: true,
-    currentLocation: 'صنعاء، شارع الزبيري',
-    earnings: '2500',
-    createdAt: new Date(),
-  });
+  const [driverStatus, setDriverStatus] = useState(false);
+  const [currentDriver, setCurrentDriver] = useState<Driver | null>(null);
 
-  const [driverStatus, setDriverStatus] = useState(currentDriver.isAvailable);
+  // تحقق من تسجيل الدخول
+  useEffect(() => {
+    if (!user || user.userType !== 'driver') {
+      setLocation('/driver-login');
+      return;
+    }
+
+    // جلب بيانات السائق من localStorage أو API
+    const savedDriver = localStorage.getItem('driver_user');
+    if (savedDriver) {
+      const driverData = JSON.parse(savedDriver);
+      setCurrentDriver(driverData);
+      setDriverStatus(driverData.isAvailable);
+    } else {
+      // إذا لم توجد بيانات محفوظة، جلبها من API
+      fetchDriverData();
+    }
+  }, [user, setLocation]);
+
+  const fetchDriverData = async () => {
+    try {
+      const response = await apiRequest('GET', `/api/drivers/${user?.id}`);
+      if (response.ok) {
+        const driverData = await response.json();
+        setCurrentDriver(driverData);
+        setDriverStatus(driverData.isAvailable);
+        localStorage.setItem('driver_user', JSON.stringify(driverData));
+      } else {
+        throw new Error('Failed to fetch driver data');
+      }
+    } catch (error) {
+      console.error('Error fetching driver data:', error);
+      toast({
+        title: "خطأ",
+        description: "فشل في تحميل بيانات السائق",
+        variant: "destructive"
+      });
+    }
+  };
 
   const { data: availableOrders, isLoading } = useQuery<Order[]>({
     queryKey: ['/api/orders', { status: 'confirmed' }],
+    enabled: !!currentDriver?.id
   });
 
   const { data: activeOrders } = useQuery<Order[]>({
-    queryKey: ['/api/orders', { driverId: currentDriver.id, status: 'on_way' }],
+    queryKey: ['/api/orders', { driverId: currentDriver?.id, status: 'on_way' }],
+    enabled: !!currentDriver?.id
   });
 
   const acceptOrderMutation = useMutation({
     mutationFn: async (orderId: string) => {
       const response = await apiRequest('PUT', `/api/orders/${orderId}`, {
         status: 'on_way',
-        driverId: currentDriver.id,
+        driverId: currentDriver?.id,
       });
       return response.json();
     },
@@ -52,6 +86,13 @@ export default function Delivery() {
         description: "يمكنك الآن بدء رحلة التوصيل",
       });
     },
+    onError: () => {
+      toast({
+        title: "خطأ",
+        description: "فشل في قبول الطلب",
+        variant: "destructive"
+      });
+    }
   });
 
   const completeOrderMutation = useMutation({
@@ -68,10 +109,19 @@ export default function Delivery() {
         description: "تم تحديث حالة الطلب بنجاح",
       });
     },
+    onError: () => {
+      toast({
+        title: "خطأ",
+        description: "فشل في تسليم الطلب",
+        variant: "destructive"
+      });
+    }
   });
 
   const updateDriverStatus = useMutation({
     mutationFn: async (isAvailable: boolean) => {
+      if (!currentDriver?.id) throw new Error('No driver ID');
+      
       const response = await apiRequest('PUT', `/api/drivers/${currentDriver.id}`, {
         isAvailable,
       });
@@ -79,12 +129,33 @@ export default function Delivery() {
     },
     onSuccess: (_, isAvailable: boolean) => {
       setDriverStatus(isAvailable);
+      // تحديث بيانات السائق المحفوظة
+      if (currentDriver) {
+        const updatedDriver = { ...currentDriver, isAvailable };
+        setCurrentDriver(updatedDriver);
+        localStorage.setItem('driver_user', JSON.stringify(updatedDriver));
+      }
+      
       toast({
         title: isAvailable ? "أنت متاح الآن" : "أنت غير متاح",
         description: isAvailable ? "ستتلقى طلبات جديدة" : "لن تتلقى طلبات جديدة",
       });
     },
+    onError: () => {
+      toast({
+        title: "خطأ",
+        description: "فشل في تحديث الحالة",
+        variant: "destructive"
+      });
+    }
   });
+
+  const handleLogout = () => {
+    logout();
+    localStorage.removeItem('driver_token');
+    localStorage.removeItem('driver_user');
+    setLocation('/driver-login');
+  };
 
   const getOrderItems = (itemsString: string) => {
     try {
@@ -104,6 +175,16 @@ export default function Delivery() {
   const todayEarnings = 450; // Mock data
   const todayOrders = 8; // Mock data
 
+  if (!currentDriver) {
+    return (
+      <div className="min-h-screen bg-background flex items-center justify-center">
+        <div className="text-center">
+          <p>جاري تحميل البيانات...</p>
+        </div>
+      </div>
+    );
+  }
+
   return (
     <div className="min-h-screen bg-background">
       {/* Header */}
@@ -118,14 +199,21 @@ export default function Delivery() {
               <p className="text-sm text-muted-foreground">سائق توصيل</p>
             </div>
           </div>
-          <div className="flex items-center gap-2">
-            <Label htmlFor="driver-status" className="text-sm text-foreground">متاح</Label>
-            <Switch
-              id="driver-status"
-              checked={driverStatus}
-              onCheckedChange={(checked) => updateDriverStatus.mutate(checked)}
-              data-testid="switch-driver-status"
-            />
+          <div className="flex items-center gap-4">
+            <div className="flex items-center gap-2">
+              <Label htmlFor="driver-status" className="text-sm text-foreground">متاح</Label>
+              <Switch
+                id="driver-status"
+                checked={driverStatus}
+                onCheckedChange={(checked) => updateDriverStatus.mutate(checked)}
+                data-testid="switch-driver-status"
+                disabled={updateDriverStatus.isPending}
+              />
+            </div>
+            <Button variant="outline" size="sm" onClick={handleLogout}>
+              <LogOut className="h-4 w-4 ml-2" />
+              تسجيل الخروج
+            </Button>
           </div>
         </div>
       </header>

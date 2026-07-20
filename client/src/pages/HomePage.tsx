@@ -1,394 +1,469 @@
-import React, { useState, useEffect } from 'react';
+import { useState, useEffect, useCallback, useRef, useMemo } from 'react';
 import { useQuery } from '@tanstack/react-query';
 import { useLocation } from 'wouter';
 import { 
-  Search, 
-  MapPin, 
-  Clock, 
   Star, 
-  ShoppingBag,
-  Percent,
-  Filter,
-  Grid,
-  List,
+  Heart,
+  UtensilsCrossed,
+  Menu,
+  Clock,
+  ChevronLeft,
   ChevronRight,
-  Truck,
-  Settings
+  MapPin,
+  Navigation,
+  AlertCircle,
+  Tag,
 } from 'lucide-react';
-import { Card, CardContent } from '@/components/ui/card';
-import { Input } from '@/components/ui/input';
-import { Button } from '@/components/ui/button';
-import { Badge } from '@/components/ui/badge';
-import { Tabs, TabsContent, TabsList, TabsTrigger } from '@/components/ui/tabs';
-import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select';
+import TimingBanner from '@/components/TimingBanner';
+import { useUiSettings } from '@/context/UiSettingsContext';
+import { useUserLocation } from '@/context/LocationContext';
 import type { Category, Restaurant, SpecialOffer } from '@shared/schema';
+import { getRestaurantStatus, getAppStatus } from '@/utils/restaurantHours';
+
+// ─── Haversine distance ───────────────────────────────────────────────────────
+function haversineDistance(lat1: number, lon1: number, lat2: number, lon2: number): number {
+  const R = 6371;
+  const dLat = ((lat2 - lat1) * Math.PI) / 180;
+  const dLon = ((lon2 - lon1) * Math.PI) / 180;
+  const a =
+    Math.sin(dLat / 2) * Math.sin(dLat / 2) +
+    Math.cos((lat1 * Math.PI) / 180) *
+      Math.cos((lat2 * Math.PI) / 180) *
+      Math.sin(dLon / 2) *
+      Math.sin(dLon / 2);
+  return R * 2 * Math.atan2(Math.sqrt(a), Math.sqrt(1 - a));
+}
+
+function formatDistance(km: number): string {
+  if (km < 1) return `${Math.round(km * 1000)} م`;
+  return `${km.toFixed(1)} كم`;
+}
+
+// ─── localStorage favorites ───────────────────────────────────────────────────
+const FAV_KEY = 'restaurant_favorites';
+function loadFavorites(): Set<string> {
+  try {
+    const raw = localStorage.getItem(FAV_KEY);
+    return new Set(raw ? JSON.parse(raw) : []);
+  } catch {
+    return new Set();
+  }
+}
+function saveFavorites(set: Set<string>) {
+  localStorage.setItem(FAV_KEY, JSON.stringify([...set]));
+}
 
 export default function HomePage() {
   const [, setLocation] = useLocation();
-  const [searchQuery, setSearchQuery] = useState('');
   const [selectedCategory, setSelectedCategory] = useState('all');
-  const [viewMode, setViewMode] = useState<'grid' | 'list'>('grid');
-  const [clickCount, setClickCount] = useState(0);
-  const [showAdminButtons, setShowAdminButtons] = useState(false);
+  const [selectedTab, setSelectedTab] = useState('all');
+  const { getSetting } = useUiSettings();
+  const { location: userLocation } = useUserLocation();
 
-  // نظام الـ 4 نقرات
-  useEffect(() => {
-    if (clickCount === 4) {
-      setShowAdminButtons(true);
+  const [offerIndex, setOfferIndex] = useState(0);
+  const sliderTimer = useRef<ReturnType<typeof setInterval> | null>(null);
+  const [favorites, setFavorites] = useState<Set<string>>(loadFavorites);
+
+  const getS = (key: string, defaultValue: string) => getSetting(key) || defaultValue;
+  const showSection = (key: string) => getSetting(key) !== 'false';
+
+  const appStatus = useMemo(() => {
+    const openingTime = getSetting('opening_time') || '08:00';
+    const closingTime = getSetting('closing_time') || '23:00';
+    const storeStatus = getSetting('store_status') || 'open';
+    return getAppStatus(openingTime, closingTime, storeStatus);
+  }, [getSetting]);
+
+  const { data: restaurants } = useQuery<Restaurant[]>({ queryKey: ['/api/restaurants'] });
+  const { data: categories } = useQuery<Category[]>({ queryKey: ['/api/categories'] });
+  const { data: offers } = useQuery<SpecialOffer[]>({ queryKey: ['/api/special-offers'] });
+
+  const activeOffers = (offers || []).filter(o => o.isActive);
+
+  const startSlider = useCallback(() => {
+    if (sliderTimer.current) clearInterval(sliderTimer.current);
+    if (activeOffers.length > 1) {
+      sliderTimer.current = setInterval(() => {
+        setOfferIndex(prev => (prev + 1) % activeOffers.length);
+      }, 4000);
     }
-    
-    // إعادة تعيين العداد بعد 3 ثوانٍ
-    const timer = setTimeout(() => {
-      if (clickCount > 0 && clickCount < 4) {
-        setClickCount(0);
-      }
-    }, 3000);
+  }, [activeOffers.length]);
 
-    return () => clearTimeout(timer);
-  }, [clickCount]);
+  useEffect(() => {
+    startSlider();
+    return () => { if (sliderTimer.current) clearInterval(sliderTimer.current); };
+  }, [startSlider]);
 
-  const handleLogoClick = () => {
-    setClickCount(prev => prev + 1);
+  const prevOffer = () => { setOfferIndex(prev => (prev - 1 + activeOffers.length) % activeOffers.length); startSlider(); };
+  const nextOffer = () => { setOfferIndex(prev => (prev + 1) % activeOffers.length); startSlider(); };
+
+  const toggleFavorite = (e: React.MouseEvent, id: string) => {
+    e.stopPropagation();
+    setFavorites(prev => {
+      const next = new Set(prev);
+      if (next.has(id)) next.delete(id);
+      else next.add(id);
+      saveFavorites(next);
+      return next;
+    });
   };
 
-  // جلب البيانات
-  const { data: categories } = useQuery<Category[]>({
-    queryKey: ['/api/categories'],
-  });
+  const userLat = userLocation.position?.coords.latitude;
+  const userLng = userLocation.position?.coords.longitude;
 
-  const { data: restaurants } = useQuery<Restaurant[]>({
-    queryKey: ['/api/restaurants', { categoryId: selectedCategory, search: searchQuery }],
-    queryFn: async () => {
-      const params = new URLSearchParams();
-      if (selectedCategory !== 'all') params.append('categoryId', selectedCategory);
-      if (searchQuery) params.append('search', searchQuery);
-      
-      const response = await fetch(`/api/restaurants?${params}`);
-      return response.json();
-    },
-  });
+  const filteredRestaurants = (() => {
+    let list = (restaurants || []).filter(r => {
+      if (selectedCategory !== 'all' && r.categoryId !== selectedCategory) return false;
+      if (selectedTab === 'newest' && !r.isNew) return false;
+      if (selectedTab === 'favorites' && !favorites.has(r.id)) return false;
+      return true;
+    });
+    if (selectedTab === 'nearest' && userLat && userLng) {
+      list = list
+        .map(r => ({
+          ...r,
+          _dist: r.latitude && r.longitude
+            ? haversineDistance(userLat, userLng, parseFloat(String(r.latitude)), parseFloat(String(r.longitude)))
+            : Infinity,
+        }))
+        .sort((a: any, b: any) => a._dist - b._dist);
+    }
+    return list;
+  })();
 
-  const { data: specialOffers } = useQuery<SpecialOffer[]>({
-    queryKey: ['/api/special-offers'],
-  });
+  const tabs = [
+    { key: 'all',       label: getS('btn_tab_all',      'الكل')     },
+    { key: 'nearest',   label: getS('btn_tab_nearest',  'الأقرب')   },
+    { key: 'newest',    label: getS('btn_tab_new',       'الجديدة')  },
+    { key: 'favorites', label: getS('btn_tab_favorites', 'المفضلة')  },
+  ];
 
-  const filteredRestaurants = restaurants?.filter(restaurant => {
-    const matchesSearch = !searchQuery || 
-      restaurant.name.toLowerCase().includes(searchQuery.toLowerCase()) ||
-      restaurant.description?.toLowerCase().includes(searchQuery.toLowerCase());
-    
-    const matchesCategory = selectedCategory === 'all' || restaurant.categoryId === selectedCategory;
-    
-    return matchesSearch && matchesCategory;
-  }) || [];
-
-  const handleRestaurantClick = (restaurantId: string) => {
-    setLocation(`/restaurant/${restaurantId}`);
-  };
-
-  const parseDecimal = (value: string | null): number => {
-    if (!value) return 0;
-    const num = parseFloat(value);
-    return isNaN(num) ? 0 : num;
-  };
+  const currentOffer = activeOffers[offerIndex];
 
   return (
-    <div className="min-h-screen bg-gray-50" dir="rtl">
-      {/* Header */}
-      <header className="bg-white shadow-sm sticky top-0 z-50">
-        <div className="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8">
-          <div className="flex items-center justify-between h-16">
-            {/* Logo مع نظام الـ 4 نقرات */}
-            <div className="flex items-center gap-3 cursor-pointer" onClick={handleLogoClick}>
-              <div className="w-10 h-10 bg-gradient-to-br from-orange-500 to-orange-600 rounded-lg flex items-center justify-center">
-                <ShoppingBag className="h-6 w-6 text-white" />
+    <div className="min-h-screen bg-gray-50">
+
+      {/* Timing Banner */}
+      {showSection('show_hero_section') && <TimingBanner />}
+
+      {/* ── Categories ─────────────────────────────────────────────────────── */}
+      {showSection('show_categories') && (
+        <div className="bg-white border-b border-gray-100">
+          <div className="flex overflow-x-auto no-scrollbar px-3 py-3 gap-3">
+
+            {/* كل التصنيفات */}
+            <div
+              className="flex flex-col items-center gap-1.5 cursor-pointer shrink-0 min-w-[62px]"
+              onClick={() => { setSelectedCategory('all'); setSelectedTab('all'); }}
+            >
+              <div className={`w-14 h-14 rounded-2xl flex items-center justify-center border-2 transition-all ${
+                selectedCategory === 'all'
+                  ? 'bg-primary/10 border-primary'
+                  : 'bg-gray-100 border-gray-100'
+              }`}>
+                <Menu className={`h-6 w-6 ${selectedCategory === 'all' ? 'text-primary' : 'text-gray-500'}`} />
               </div>
-              <div>
-                <h1 className="text-xl font-bold text-gray-900">السريع ون</h1>
-                <p className="text-xs text-gray-500">توصيل سريع وآمن</p>
-              </div>
-              
-              {/* مؤشر النقرات */}
-              {clickCount > 0 && clickCount < 4 && (
-                <div className="flex gap-1 mr-2">
-                  {[...Array(4)].map((_, i) => (
-                    <div
-                      key={i}
-                      className={`w-2 h-2 rounded-full ${
-                        i < clickCount ? 'bg-orange-500' : 'bg-gray-300'
-                      }`}
-                    />
-                  ))}
-                </div>
-              )}
+              <span className={`text-[10px] font-bold text-center leading-tight ${selectedCategory === 'all' ? 'text-primary' : 'text-gray-600'}`}>
+                {getS('text_all_categories', 'كل التصنيفات')}
+              </span>
             </div>
 
-            {/* أزرار الإدارة (تظهر بعد 4 نقرات) */}
-            {showAdminButtons && (
-              <div className="flex items-center gap-2">
-                <Button
-                  variant="outline"
-                  size="sm"
-                  onClick={() => setLocation('/admin-login')}
-                  className="flex items-center gap-2"
-                >
-                  <Settings className="h-4 w-4" />
-                  لوحة التحكم
-                </Button>
-                <Button
-                  variant="outline"
-                  size="sm"
-                  onClick={() => setLocation('/driver-login')}
-                  className="flex items-center gap-2"
-                >
-                  <Truck className="h-4 w-4" />
-                  تطبيق السائق
-                </Button>
+            {/* وصل لي */}
+            {showSection('show_wasalni_service') && (
+              <div
+                className="flex flex-col items-center gap-1.5 cursor-pointer shrink-0 min-w-[62px]"
+                onClick={() => setLocation('/wasalni')}
+              >
+                <div className="w-14 h-14 rounded-2xl flex items-center justify-center bg-[#F57C00] border-2 border-[#F57C00] shadow-sm">
+                  <span className="text-2xl">🛵</span>
+                </div>
+                <span className="text-[10px] font-bold text-center leading-tight text-[#F57C00]">
+                  {getS('wasalni_service_name', 'وصل لي')}
+                </span>
               </div>
             )}
 
-            {/* العنوان والموقع */}
-            <div className="flex items-center gap-2 text-sm text-gray-600">
-              <MapPin className="h-4 w-4" />
-              <span>صنعاء، اليمن</span>
-            </div>
-          </div>
-        </div>
-      </header>
-
-      {/* Hero Section */}
-      <section className="bg-gradient-to-br from-orange-500 to-orange-600 text-white py-12">
-        <div className="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8">
-          <div className="text-center">
-            <h2 className="text-4xl font-bold mb-4">اطلب طعامك المفضل</h2>
-            <p className="text-xl mb-8 opacity-90">توصيل سريع من أفضل المطاعم في صنعاء</p>
-            
-            {/* شريط البحث */}
-            <div className="max-w-2xl mx-auto relative">
-              <Search className="absolute right-4 top-1/2 transform -translate-y-1/2 h-5 w-5 text-gray-400" />
-              <Input
-                type="text"
-                placeholder="ابحث عن مطعم أو وجبة..."
-                value={searchQuery}
-                onChange={(e) => setSearchQuery(e.target.value)}
-                className="w-full pr-12 pl-4 py-4 text-lg rounded-xl border-0 shadow-lg"
-              />
-            </div>
-          </div>
-        </div>
-      </section>
-
-      {/* Main Content */}
-      <main className="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8 py-8">
-        {/* العروض الخاصة */}
-        {specialOffers && specialOffers.length > 0 && (
-          <section className="mb-12">
-            <div className="flex items-center gap-2 mb-6">
-              <Percent className="h-6 w-6 text-orange-500" />
-              <h3 className="text-2xl font-bold text-gray-900">العروض الخاصة</h3>
-            </div>
-            
-            <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-6">
-              {specialOffers.slice(0, 3).map((offer) => (
-                <Card key={offer.id} className="overflow-hidden hover:shadow-lg transition-shadow cursor-pointer">
-                  <div className="h-48 bg-gradient-to-br from-green-400 to-green-500 flex items-center justify-center">
-                    {offer.image ? (
-                      <img src={offer.image} alt={offer.title} className="w-full h-full object-cover" />
-                    ) : (
-                      <Percent className="h-16 w-16 text-white" />
-                    )}
+            {/* Dynamic categories */}
+            {categories
+              ?.filter(c => c.isActive !== false)
+              .sort((a, b) => (a.sortOrder || 0) - (b.sortOrder || 0))
+              .map(cat => (
+                <div
+                  key={cat.id}
+                  className="flex flex-col items-center gap-1.5 cursor-pointer shrink-0 min-w-[62px]"
+                  onClick={() => { setSelectedCategory(cat.id); setSelectedTab('all'); }}
+                >
+                  <div className={`w-14 h-14 rounded-2xl flex items-center justify-center border-2 transition-all overflow-hidden ${
+                    selectedCategory === cat.id
+                      ? 'border-primary shadow-sm bg-primary/5'
+                      : 'bg-gray-100 border-gray-100'
+                  }`}>
+                    {cat.image
+                      ? <img src={cat.image} alt={cat.name} className="w-full h-full object-cover" />
+                      : cat.icon
+                        ? <i className={`${cat.icon} text-xl ${selectedCategory === cat.id ? 'text-primary' : 'text-gray-500'}`} />
+                        : <UtensilsCrossed className={`h-6 w-6 ${selectedCategory === cat.id ? 'text-primary' : 'text-gray-500'}`} />
+                    }
                   </div>
-                  <CardContent className="p-4">
-                    <h4 className="font-bold text-lg mb-2">{offer.title}</h4>
-                    <p className="text-gray-600 text-sm mb-3">{offer.description}</p>
-                    <div className="flex items-center justify-between">
-                      {offer.discountPercent && (
-                        <Badge className="bg-green-100 text-green-800">
-                          خصم {offer.discountPercent}%
-                        </Badge>
-                      )}
-                      {offer.discountAmount && (
-                        <Badge className="bg-green-100 text-green-800">
-                          خصم {parseDecimal(offer.discountAmount)} ريال
-                        </Badge>
-                      )}
-                    </div>
-                  </CardContent>
-                </Card>
+                  <span className={`text-[10px] font-bold text-center leading-tight ${selectedCategory === cat.id ? 'text-primary' : 'text-gray-600'}`}>
+                    {cat.name}
+                  </span>
+                </div>
               ))}
-            </div>
-          </section>
-        )}
+          </div>
+        </div>
+      )}
 
-        {/* التصنيفات والمطاعم */}
-        <section>
-          <div className="flex items-center justify-between mb-6">
-            <h3 className="text-2xl font-bold text-gray-900">المطاعم</h3>
-            <div className="flex items-center gap-4">
-              {/* تبديل العرض */}
-              <div className="flex items-center gap-1 bg-gray-100 rounded-lg p-1">
-                <Button
-                  variant={viewMode === 'grid' ? 'default' : 'ghost'}
-                  size="sm"
-                  onClick={() => setViewMode('grid')}
+      {/* ── Offers Slider ───────────────────────────────────────────────────── */}
+      {showSection('show_hero_section') && activeOffers.length > 0 && currentOffer && (
+        <div className="px-3 pt-3 pb-1">
+          <div className="relative w-full rounded-2xl overflow-hidden shadow-md" style={{ height: '170px' }}>
+
+            {/* Background: image or gradient */}
+            {currentOffer.image
+              ? <img src={currentOffer.image} alt={currentOffer.title} className="w-full h-full object-cover" />
+              : (
+                <div className="w-full h-full bg-gradient-to-l from-[#E53935] to-[#F57C00]" />
+              )
+            }
+
+            {/* Dark overlay for image */}
+            {currentOffer.image && (
+              <div className="absolute inset-0 bg-gradient-to-t from-black/70 via-black/20 to-transparent" />
+            )}
+
+            {/* Badge top-right */}
+            {currentOffer.showBadge !== false && (
+              <div className="absolute top-3 right-3 flex gap-1.5">
+                <span className="bg-white/25 backdrop-blur-sm text-white text-[10px] font-black px-2.5 py-1 rounded-full border border-white/30">
+                  {currentOffer.badgeText1 || 'عرض خاص'}
+                </span>
+              </div>
+            )}
+
+            {/* Content */}
+            <div className="absolute inset-0 flex flex-col justify-end p-4 text-right">
+              <h3 className="text-white font-black text-base leading-snug line-clamp-2 mb-1 drop-shadow">
+                {currentOffer.title}
+              </h3>
+              {currentOffer.description && (
+                <p className="text-white/85 text-[12px] line-clamp-1 mb-2.5">
+                  {currentOffer.description}
+                </p>
+              )}
+              <div className="flex items-center justify-between">
+                <button
+                  className="bg-white text-primary text-[12px] font-black px-4 py-1.5 rounded-full flex items-center gap-1 shadow"
+                  onClick={() => {
+                    if (currentOffer.restaurantId) {
+                      const hash = currentOffer.menuItemId ? `#product-${currentOffer.menuItemId}` : '';
+                      setLocation(`/restaurant/${currentOffer.restaurantId}${hash}`);
+                    } else if (currentOffer.menuItemId) {
+                      setLocation(`/category/العروض#product-${currentOffer.menuItemId}`);
+                    } else {
+                      setLocation('/category/العروض');
+                    }
+                  }}
                 >
-                  <Grid className="h-4 w-4" />
-                </Button>
-                <Button
-                  variant={viewMode === 'list' ? 'default' : 'ghost'}
-                  size="sm"
-                  onClick={() => setViewMode('list')}
-                >
-                  <List className="h-4 w-4" />
-                </Button>
+                  {getS('btn_shop_now', 'تسوق الآن')}
+                  <ChevronLeft className="h-3.5 w-3.5" />
+                </button>
+                {(currentOffer.discountPercent || currentOffer.discountAmount) && (
+                  <span className="bg-white/25 backdrop-blur-sm text-white text-[10px] font-black px-2.5 py-0.5 rounded-full border border-white/30">
+                    {currentOffer.discountPercent
+                      ? `خصم ${currentOffer.discountPercent}%`
+                      : `خصم ${currentOffer.discountAmount} ر.ي`}
+                  </span>
+                )}
               </div>
             </div>
-          </div>
 
-          {/* فلتر التصنيفات */}
-          <div className="mb-8">
-            <Tabs value={selectedCategory} onValueChange={setSelectedCategory}>
-              <TabsList className="grid w-full grid-cols-2 md:grid-cols-4 lg:grid-cols-6 h-auto">
-                <TabsTrigger value="all" className="py-3">
-                  جميع المطاعم
-                </TabsTrigger>
-                {categories?.map((category) => (
-                  <TabsTrigger key={category.id} value={category.id} className="py-3">
-                    {category.name}
-                  </TabsTrigger>
-                ))}
-              </TabsList>
-            </Tabs>
+            {/* Arrows */}
+            {activeOffers.length > 1 && (
+              <>
+                <button onClick={nextOffer} className="absolute left-2 top-1/2 -translate-y-1/2 bg-black/30 hover:bg-black/50 text-white rounded-full p-1.5 transition-all">
+                  <ChevronLeft className="h-4 w-4" />
+                </button>
+                <button onClick={prevOffer} className="absolute right-2 top-1/2 -translate-y-1/2 bg-black/30 hover:bg-black/50 text-white rounded-full p-1.5 transition-all">
+                  <ChevronRight className="h-4 w-4" />
+                </button>
+                {/* Dots */}
+                <div className="absolute bottom-2 left-1/2 -translate-x-1/2 flex gap-1.5">
+                  {activeOffers.map((_, i) => (
+                    <button key={i} onClick={() => { setOfferIndex(i); startSlider(); }}
+                      className={`rounded-full transition-all ${i === offerIndex ? 'w-4 h-1.5 bg-white' : 'w-1.5 h-1.5 bg-white/50'}`}
+                    />
+                  ))}
+                </div>
+              </>
+            )}
           </div>
+        </div>
+      )}
 
-          {/* قائمة المطاعم */}
-          {filteredRestaurants.length > 0 ? (
-            <div className={`grid gap-6 ${
-              viewMode === 'grid' 
-                ? 'grid-cols-1 md:grid-cols-2 lg:grid-cols-3' 
-                : 'grid-cols-1'
-            }`}>
-              {filteredRestaurants.map((restaurant) => (
-                <Card 
-                  key={restaurant.id} 
-                  className="overflow-hidden hover:shadow-lg transition-all duration-200 cursor-pointer group"
-                  onClick={() => handleRestaurantClick(restaurant.id)}
-                >
-                  <div className="h-48 bg-gradient-to-br from-gray-200 to-gray-300 flex items-center justify-center overflow-hidden">
-                    {restaurant.image ? (
-                      <img 
-                        src={restaurant.image} 
-                        alt={restaurant.name}
-                        className="w-full h-full object-cover group-hover:scale-105 transition-transform duration-200"
-                      />
-                    ) : (
-                      <ShoppingBag className="h-16 w-16 text-gray-400" />
+      {/* ── Restaurant List ──────────────────────────────────────────────────── */}
+      <div className="px-3 pt-3 pb-24">
+
+        {/* Section Header: title on RIGHT (RTL start), count on LEFT */}
+        <div className="flex items-center justify-between mb-3">
+          <span className="text-xs text-gray-400 font-bold">
+            {filteredRestaurants.length} مطعم ومحل
+          </span>
+          <span className="text-sm font-black text-gray-800">
+            {selectedCategory === 'all'
+              ? 'جميع المطاعم والمحلات'
+              : categories?.find(c => c.id === selectedCategory)?.name || 'المطاعم'}
+          </span>
+        </div>
+
+        {/* Location notice for "nearest" tab */}
+        {selectedTab === 'nearest' && !userLat && (
+          <div className="flex items-center gap-2 bg-amber-50 border border-amber-200 rounded-xl px-3 py-2 mb-3 text-right">
+            <Navigation className="h-4 w-4 text-amber-500 shrink-0" />
+            <p className="text-xs text-amber-700 font-bold">يرجى السماح بالوصول إلى موقعك لعرض الأقرب إليك</p>
+          </div>
+        )}
+
+        {/* Tabs */}
+        <div className="flex mb-4 bg-white rounded-xl overflow-hidden border border-gray-100 shadow-sm">
+          {tabs.map(tab => (
+            <button
+              key={tab.key}
+              className={`flex-1 py-2.5 font-bold text-sm border-b-2 transition-all ${
+                selectedTab === tab.key
+                  ? 'border-primary text-primary bg-primary/5'
+                  : 'border-transparent text-gray-400 hover:text-gray-600'
+              }`}
+              onClick={() => setSelectedTab(tab.key)}
+            >
+              {tab.label}
+            </button>
+          ))}
+        </div>
+
+        {/* App closed banner */}
+        {!appStatus.isOpen && (
+          <div className="flex items-center gap-2 bg-red-50 border border-red-200 rounded-xl px-4 py-3 mb-3 text-right">
+            <AlertCircle className="h-5 w-5 text-red-500 shrink-0" />
+            <p className="text-sm text-red-700 font-bold">{appStatus.message || 'التطبيق مغلق حالياً، نعود قريباً'}</p>
+          </div>
+        )}
+
+        {/* Restaurant Cards */}
+        <div className="space-y-2.5">
+          {filteredRestaurants.map(restaurant => {
+            const status = getRestaurantStatus(restaurant, appStatus.isOpen);
+            const isFav = favorites.has(restaurant.id);
+            const dist = userLat && userLng && restaurant.latitude && restaurant.longitude
+              ? haversineDistance(userLat, userLng, parseFloat(String(restaurant.latitude)), parseFloat(String(restaurant.longitude)))
+              : null;
+
+            return (
+              <div
+                key={restaurant.id}
+                className="bg-white rounded-2xl shadow-sm border border-gray-100 overflow-hidden active:scale-[0.99] transition-transform cursor-pointer"
+                onClick={() => setLocation(`/restaurant/${restaurant.id}`)}
+              >
+                <div className="flex items-center p-3 gap-3">
+
+                  {/* Heart button — RIGHT (RTL start, first in DOM) */}
+                  <button
+                    className={`shrink-0 p-1 transition-colors ${isFav ? 'text-primary' : 'text-gray-300 hover:text-primary'}`}
+                    onClick={e => toggleFavorite(e, restaurant.id)}
+                  >
+                    <Heart className={`h-5 w-5 ${isFav ? 'fill-primary' : ''}`} />
+                  </button>
+
+                  {/* Info — center */}
+                  <div className="flex-1 min-w-0">
+                    <h4 className="font-black text-gray-900 text-[15px] leading-tight mb-0.5 truncate">
+                      {restaurant.name}
+                    </h4>
+                    {restaurant.description && (
+                      <p className="text-xs text-gray-500 leading-tight mb-1 truncate">{restaurant.description}</p>
                     )}
-                  </div>
-                  
-                  <CardContent className="p-4">
-                    <div className="flex items-start justify-between mb-2">
-                      <h4 className="font-bold text-lg group-hover:text-orange-600 transition-colors">
-                        {restaurant.name}
-                      </h4>
-                      {restaurant.isOpen ? (
-                        <Badge className="bg-green-100 text-green-800">مفتوح</Badge>
-                      ) : (
-                        <Badge variant="secondary">مغلق</Badge>
+                    {/* Stars */}
+                    <div className="flex items-center gap-0.5 mb-1">
+                      {[1, 2, 3, 4, 5].map(star => (
+                        <Star
+                          key={star}
+                          className={`h-3 w-3 ${
+                            star <= Math.round(parseFloat(restaurant.rating || '0') || 0)
+                              ? 'text-yellow-400 fill-yellow-400'
+                              : 'text-gray-200 fill-gray-200'
+                          }`}
+                        />
+                      ))}
+                    </div>
+                    {/* Meta info */}
+                    <div className="flex items-center gap-2 text-[11px] text-gray-400 flex-wrap">
+                      {restaurant.deliveryTime && (
+                        <span className="flex items-center gap-0.5">
+                          <Clock className="h-3 w-3" />{restaurant.deliveryTime} دقيقة
+                        </span>
+                      )}
+                      {restaurant.deliveryFee !== undefined && (
+                        <span className="flex items-center gap-0.5">
+                          <Tag className="h-3 w-3" />{restaurant.deliveryFee} ريال
+                        </span>
+                      )}
+                      {dist !== null && (
+                        <span className="flex items-center gap-0.5 text-primary font-bold">
+                          <MapPin className="h-3 w-3" />{formatDistance(dist)}
+                        </span>
                       )}
                     </div>
-                    
-                    {restaurant.description && (
-                      <p className="text-gray-600 text-sm mb-3 line-clamp-2">
-                        {restaurant.description}
-                      </p>
-                    )}
-                    
-                    <div className="flex items-center justify-between text-sm text-gray-500">
-                      <div className="flex items-center gap-4">
-                        <div className="flex items-center gap-1">
-                          <Star className="h-4 w-4 text-yellow-500" />
-                          <span>{parseDecimal(restaurant.rating)}</span>
-                        </div>
-                        <div className="flex items-center gap-1">
-                          <Clock className="h-4 w-4" />
-                          <span>{restaurant.deliveryTime}</span>
-                        </div>
-                      </div>
-                      <div className="text-left">
-                        <p className="text-xs">رسوم التوصيل</p>
-                        <p className="font-medium text-gray-900">
-                          {parseDecimal(restaurant.deliveryFee)} ريال
-                        </p>
-                      </div>
+                  </div>
+
+                  {/* Restaurant image with badge overlay — LEFT (RTL end, last in DOM) */}
+                  <div className="relative shrink-0">
+                    <div className="w-[72px] h-[72px] rounded-xl overflow-hidden border border-gray-100 bg-gray-50 flex items-center justify-center">
+                      {restaurant.image
+                        ? <img src={restaurant.image} alt={restaurant.name} className="w-full h-full object-cover" />
+                        : <UtensilsCrossed className="h-7 w-7 text-gray-300" />
+                      }
                     </div>
-                    
-                    <div className="mt-3 pt-3 border-t flex items-center justify-between">
-                      <span className="text-xs text-gray-500">
-                        أقل طلب: {parseDecimal(restaurant.minimumOrder)} ريال
-                      </span>
-                      <ChevronRight className="h-4 w-4 text-gray-400 group-hover:text-orange-600 transition-colors" />
-                    </div>
-                  </CardContent>
-                </Card>
-              ))}
-            </div>
-          ) : (
-            <div className="text-center py-12">
-              <ShoppingBag className="h-16 w-16 text-gray-300 mx-auto mb-4" />
-              <h3 className="text-lg font-medium text-gray-900 mb-2">لا توجد مطاعم</h3>
-              <p className="text-gray-500">
-                {searchQuery 
-                  ? `لم نجد مطاعم تطابق "${searchQuery}"`
-                  : 'لا توجد مطاعم متاحة في الوقت الحالي'
+                    {/* Status badge overlaid on image */}
+                    <span className={`absolute bottom-1 right-1 text-[9px] font-black px-1.5 py-0.5 rounded-md ${
+                      status.isOpen
+                        ? status.statusColor === 'yellow' ? 'bg-amber-500 text-white' : 'bg-emerald-500 text-white'
+                        : 'bg-gray-800 text-white'
+                    }`}>
+                      {status.isOpen ? 'مفتوح' : 'مغلق'}
+                    </span>
+                  </div>
+                </div>
+              </div>
+            );
+          })}
+
+          {/* Empty state */}
+          {filteredRestaurants.length === 0 && (
+            <div className="text-center py-16">
+              <div className="w-20 h-20 bg-gray-100 rounded-full flex items-center justify-center mx-auto mb-4">
+                {selectedTab === 'favorites'
+                  ? <Heart className="h-10 w-10 text-gray-300" />
+                  : selectedTab === 'nearest'
+                    ? <Navigation className="h-10 w-10 text-gray-300" />
+                    : <UtensilsCrossed className="h-10 w-10 text-gray-300" />
                 }
+              </div>
+              <p className="text-gray-500 font-bold text-lg">
+                {selectedTab === 'favorites'
+                  ? 'لا توجد مفضلات بعد'
+                  : selectedTab === 'nearest'
+                    ? 'لا توجد محلات قريبة'
+                    : 'لا توجد مطاعم متاحة'}
+              </p>
+              <p className="text-gray-400 text-sm mt-1">
+                {selectedTab === 'favorites'
+                  ? 'انقر على ♥ في أي مطعم لإضافته للمفضلة'
+                  : 'جرب تغيير التصنيف أو الفلتر'}
               </p>
             </div>
           )}
-        </section>
-      </main>
-
-      {/* Footer */}
-      <footer className="bg-gray-900 text-white py-12 mt-16">
-        <div className="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8">
-          <div className="grid grid-cols-1 md:grid-cols-3 gap-8">
-            <div>
-              <div className="flex items-center gap-3 mb-4">
-                <div className="w-8 h-8 bg-orange-500 rounded-lg flex items-center justify-center">
-                  <ShoppingBag className="h-5 w-5 text-white" />
-                </div>
-                <h3 className="text-xl font-bold">السريع ون</h3>
-              </div>
-              <p className="text-gray-400">
-                أفضل تطبيق توصيل طعام في اليمن. نوصل لك طعامك المفضل بسرعة وأمان.
-              </p>
-            </div>
-            
-            <div>
-              <h4 className="font-semibold mb-4">روابط سريعة</h4>
-              <ul className="space-y-2 text-gray-400">
-                <li><a href="#" className="hover:text-white transition-colors">من نحن</a></li>
-                <li><a href="#" className="hover:text-white transition-colors">اتصل بنا</a></li>
-                <li><a href="#" className="hover:text-white transition-colors">الشروط والأحكام</a></li>
-                <li><a href="#" className="hover:text-white transition-colors">سياسة الخصوصية</a></li>
-              </ul>
-            </div>
-            
-            <div>
-              <h4 className="font-semibold mb-4">تواصل معنا</h4>
-              <div className="space-y-2 text-gray-400">
-                <p>📞 +967 1 234 567</p>
-                <p>📧 info@sareeone.com</p>
-                <p>📍 صنعاء، اليمن</p>
-              </div>
-            </div>
-          </div>
-          
-          <div className="border-t border-gray-800 mt-8 pt-8 text-center text-gray-400">
-            <p>&copy; 2024 السريع ون. جميع الحقوق محفوظة.</p>
-          </div>
         </div>
-      </footer>
+      </div>
     </div>
   );
 }

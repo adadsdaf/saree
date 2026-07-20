@@ -8,8 +8,9 @@ import { Label } from '@/components/ui/label';
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select';
 import { Tabs, TabsContent, TabsList, TabsTrigger } from '@/components/ui/tabs';
 import { useTheme } from '../context/ThemeContext';
+import { useLanguage } from '../context/LanguageContext';
 import { useToast } from '@/hooks/use-toast';
-import { UiControlPanel } from '@/components/UiControlPanel';
+import { PermissionsManager } from '@/components/PermissionsManager';
 
 interface SettingItem {
   key: string;
@@ -30,6 +31,7 @@ interface SettingsGroup {
 export default function Settings() {
   const [, setLocation] = useLocation();
   const { theme, toggleTheme } = useTheme();
+  const { language, setLanguage } = useLanguage();
   const { toast } = useToast();
   
   const [settings, setSettings] = useState({
@@ -38,7 +40,6 @@ export default function Settings() {
       promotions: true,
       sound: true,
     },
-    language: 'ar',
     currency: 'YER',
     autoLocation: true,
     biometric: false,
@@ -119,12 +120,18 @@ export default function Settings() {
           label: 'اللغة',
           description: 'اختيار لغة التطبيق',
           type: 'select',
-          value: settings.language,
+          value: language,
           options: [
             { value: 'ar', label: 'العربية' },
             { value: 'en', label: 'English' },
           ],
-          onChange: (value: string) => handleSimpleSettingChange('language', value),
+          onChange: (value: 'ar' | 'en') => {
+            setLanguage(value);
+            toast({
+              title: "تم تغيير اللغة",
+              description: value === 'ar' ? "تم تحويل التطبيق للغة العربية" : "App has been switched to English",
+            });
+          },
         },
         {
           key: 'currency',
@@ -134,8 +141,6 @@ export default function Settings() {
           value: settings.currency,
           options: [
             { value: 'YER', label: 'الريال اليمني (YER)' },
-            { value: 'SAR', label: 'الريال السعودي (SAR)' },
-            { value: 'USD', label: 'الدولار الأمريكي (USD)' },
           ],
           onChange: (value: string) => handleSimpleSettingChange('currency', value),
         },
@@ -206,9 +211,9 @@ export default function Settings() {
               <SettingsIcon className="h-4 w-4" />
               إعدادات عامة
             </TabsTrigger>
-            <TabsTrigger value="ui-control" className="flex items-center gap-2">
-              <Globe className="h-4 w-4" />
-              تحكم الواجهة
+            <TabsTrigger value="permissions" className="flex items-center gap-2">
+              <Lock className="h-4 w-4" />
+              الصلاحيات
             </TabsTrigger>
           </TabsList>
           
@@ -331,8 +336,15 @@ export default function Settings() {
             </Button>
           </TabsContent>
           
-          <TabsContent value="ui-control" className="mt-6">
-            <UiControlPanel />
+          <TabsContent value="permissions" className="mt-6">
+            <PermissionsManager onPermissionUpdate={(permission, granted) => {
+              console.log(`Permission ${permission} ${granted ? 'granted' : 'denied'}`);
+              toast({
+                title: granted ? 'تم منح الإذن' : 'تم رفض الإذن',
+                description: `إذن ${permission} ${granted ? 'مُمنوح' : 'مرفوض'}`,
+                variant: granted ? 'default' : 'destructive',
+              });
+            }} />
           </TabsContent>
         </Tabs>
       </section>

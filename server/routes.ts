@@ -1,491 +1,448 @@
 import type { Express } from "express";
+import express from "express";
 import { createServer, type Server } from "http";
-import { dbStorage } from "./db.js";
-import { authService } from "./auth.js";
+import path from "path";
+import { fileURLToPath } from "url";
+import { storage } from "./storage";
+import { dbStorage } from "./db";
+import { log } from "./viteServer";
+import { broadcastSettingsChanged } from "./broadcast";
+import authRoutes from "./routes/auth";
+import { customerRoutes } from "./routes/customer";
+import driverRoutes from "./routes/driver";
+import ordersRoutes from "./routes/orders";
+import deliveryFeeRoutes from "./routes/delivery-fees";
+import { adminRoutes } from "./routes/admin";
+import { registerAdvancedRoutes } from "./routes/advanced";
+import { publicRoutes } from "./routes/public";
+import restaurantAccountsRouter from "./routes/restaurant-accounts";
+import flutterRouter from "./routes/flutter";
+import wasalniRouter from "./routes/wasalni";
+import imageUploadRouter from "./imageUpload";
+import { ensureUploadsDir, UPLOADS_DIR } from "./localStorage";
+
+const __dirname = path.dirname(fileURLToPath(import.meta.url));
 import { 
   insertRestaurantSchema, 
   insertMenuItemSchema, 
   insertOrderSchema, 
+  insertDriverSchema, 
+  insertCategorySchema, 
   insertSpecialOfferSchema,
-  insertCategorySchema
-} from "../shared/schema.js";
+  insertUiSettingsSchema,
+  insertRestaurantSectionSchema,
+  insertRatingSchema,
+  insertNotificationSchema,
+  insertWalletSchema,
+  insertWalletTransactionSchema,
+  insertSystemSettingsSchema,
+  insertRestaurantEarningsSchema,
+  insertUserSchema,
+  insertCartSchema,
+  insertFavoritesSchema,
+  orders
+} from "@shared/schema";
+import { randomUUID } from "crypto";
+import { eq, and, gte, lte, desc, isNull } from "drizzle-orm";
+import { z } from "zod";
 
 export async function registerRoutes(app: Express): Promise<Server> {
-  
-  // Initialize default admin user on startup
-  await authService.createDefaultAdmin();
-  
-  // Admin Authentication Routes
-  app.post("/api/admin/login", async (req, res) => {
-    try {
-      const { email, password } = req.body;
-      
-      if (!email || !password) {
-        return res.status(400).json({ error: "البريد الإلكتروني وكلمة المرور مطلوبان" });
-      }
 
-      const loginResult = await authService.loginAdmin(email, password);
-      
-      if (loginResult.success) {
-        res.json({
-          success: true,
-          token: loginResult.token,
-          admin: loginResult.admin,
-          message: "تم تسجيل الدخول بنجاح"
-        });
-      } else {
-        res.status(401).json({ error: loginResult.message });
-      }
-    } catch (error) {
-      console.error('خطأ في تسجيل الدخول:', error);
-      res.status(500).json({ error: "خطأ في الخادم" });
+  // Ensure uploads directory exists
+  ensureUploadsDir();
+
+  // Serve uploaded images as static files
+  app.use('/uploads', express.static(UPLOADS_DIR));
+
+  // ✅ Serve TWA Digital Asset Links (.well-known) so the Android wrapper
+  // verifies ownership and hides the browser top URL bar.
+  app.get('/.well-known/assetlinks.json', (_req, res) => {
+    try {
+      const filePath = path.resolve(import.meta.dirname, '..', 'client', 'public', 'well-known', 'assetlinks.json');
+      res.type('application/json').sendFile(filePath);
+    } catch (err) {
+      res.status(404).json({ error: 'assetlinks.json not found' });
     }
   });
 
-  // Driver Authentication Routes
-  app.post("/api/driver/login", async (req, res) => {
-    try {
-      const { phone, password } = req.body;
-      
-      if (!phone || !password) {
-        return res.status(400).json({ error: "رقم الهاتف وكلمة المرور مطلوبان" });
-      }
+  // Image upload routes (local disk storage)
+  app.use('/api/images', imageUploadRouter);
 
-      const loginResult = await authService.loginDriver(phone, password);
-      
-      if (loginResult.success) {
-        res.json({
-          success: true,
-          token: loginResult.token,
-          driver: loginResult.driver,
-          message: "تم تسجيل الدخول بنجاح"
-        });
-      } else {
-        res.status(401).json({ error: loginResult.message });
+  // Auth Routes
+  app.use("/api/auth", authRoutes);
+
+  // Admin and Advanced Routes
+  app.use("/api/admin", adminRoutes);
+  registerAdvancedRoutes(app);
+
+  // Users
+  app.get("/api/users/:id", async (req, res) => {
+    try {
+      const { id } = req.params;
+      const user = await storage.getUser(id);
+      if (!user) {
+        return res.status(404).json({ message: "المستخدم غير موجود" });
       }
+      res.json(user);
     } catch (error) {
-      console.error('خطأ في تسجيل دخول السائق:', error);
-      res.status(500).json({ error: "خطأ في الخادم" });
+      res.status(500).json({ message: "خطأ في جلب بيانات المستخدم" });
     }
   });
 
-  app.post("/api/admin/logout", async (req, res) => {
+  app.get("/api/users/username/:username", async (req, res) => {
     try {
-      const { token } = req.body;
-      if (token) {
-        await dbStorage.deleteAdminSession(token);
+      const { username } = req.params;
+      const user = await storage.getUserByUsername(username);
+      if (!user) {
+        return res.status(404).json({ message: "المستخدم غير موجود" });
       }
-      res.json({ message: "تم تسجيل الخروج بنجاح" });
+      res.json(user);
     } catch (error) {
-      res.status(500).json({ error: "خطأ في الخادم" });
+      res.status(500).json({ message: "خطأ في جلب بيانات المستخدم" });
     }
   });
 
-  app.post("/api/driver/logout", async (req, res) => {
+  app.post("/api/users", async (req, res) => {
     try {
-      const { token } = req.body;
-      if (token) {
-        await dbStorage.deleteAdminSession(token);
-      }
-      res.json({ message: "تم تسجيل الخروج بنجاح" });
+      const validatedData = insertUserSchema.parse(req.body);
+      const user = await storage.createUser(validatedData);
+      res.status(201).json(user);
     } catch (error) {
-      res.status(500).json({ error: "خطأ في الخادم" });
+      res.status(400).json({ message: "بيانات المستخدم غير صحيحة" });
     }
   });
 
-  app.get("/api/admin/verify", async (req, res) => {
+  app.put("/api/users/:id", async (req, res) => {
     try {
-      const token = req.headers.authorization?.replace("Bearer ", "");
-      
-      if (!token) {
-        return res.status(401).json({ error: "رمز التحقق مطلوب" });
+      const { id } = req.params;
+      const validatedData = insertUserSchema.partial().parse(req.body);
+      const user = await storage.updateUser(id, validatedData);
+      if (!user) {
+        return res.status(404).json({ message: "المستخدم غير موجود" });
       }
-
-      const validation = await authService.validateSession(token);
-      
-      if (validation.valid) {
-        res.json({
-          valid: true,
-          userType: validation.userType,
-          adminId: validation.adminId
-        });
-      } else {
-        res.status(401).json({ error: "انتهت صلاحية الجلسة" });
-      }
+      res.json(user);
     } catch (error) {
-      console.error('خطأ في التحقق:', error);
-      res.status(500).json({ error: "خطأ في الخادم" });
+      res.status(400).json({ message: "بيانات المستخدم غير صحيحة" });
     }
   });
 
   // Categories
   app.get("/api/categories", async (req, res) => {
     try {
-      const categories = await dbStorage.getCategories();
+      const categories = await storage.getCategories();
       res.json(categories);
     } catch (error) {
-      res.status(500).json({ error: "Failed to fetch categories" });
+      res.status(500).json({ message: "Failed to fetch categories" });
     }
   });
 
-  app.post("/api/categories", async (req, res) => {
-    try {
-      const validatedData = insertCategorySchema.parse(req.body);
-      const category = await dbStorage.createCategory(validatedData);
-      res.status(201).json(category);
-    } catch (error) {
-      res.status(400).json({ error: "Invalid category data" });
-    }
-  });
+  // Category write operations are only available through /api/admin/categories
 
-  app.put("/api/categories/:id", async (req, res) => {
-    try {
-      const { id } = req.params;
-      const validatedData = insertCategorySchema.partial().parse(req.body);
-      const category = await dbStorage.updateCategory(id, validatedData);
-      if (!category) {
-        return res.status(404).json({ error: "Category not found" });
-      }
-      res.json(category);
-    } catch (error) {
-      res.status(400).json({ error: "Invalid category data" });
-    }
-  });
-
-  app.delete("/api/categories/:id", async (req, res) => {
-    try {
-      const { id } = req.params;
-      const success = await dbStorage.deleteCategory(id);
-      if (!success) {
-        return res.status(404).json({ error: "Category not found" });
-      }
-      res.status(204).send();
-    } catch (error) {
-      res.status(500).json({ error: "Failed to delete category" });
-    }
-  });
-
-  // Restaurants
+  // Enhanced Restaurants with filtering - مطاعم محسنة مع التصفية
   app.get("/api/restaurants", async (req, res) => {
     try {
-      const { categoryId } = req.query;
-      let restaurants;
+      const { 
+        categoryId, 
+        lat, 
+        lon, 
+        sortBy, 
+        isFeatured, 
+        isNew, 
+        search, 
+        radius, 
+        isOpen 
+      } = req.query;
       
-      if (categoryId) {
-        restaurants = await dbStorage.getRestaurantsByCategory(categoryId as string);
-      } else {
-        restaurants = await dbStorage.getRestaurants();
-      }
+      const filters = {
+        categoryId: categoryId as string,
+        userLatitude: lat ? parseFloat(lat as string) : undefined,
+        userLongitude: lon ? parseFloat(lon as string) : undefined,
+        sortBy: sortBy as 'name' | 'rating' | 'deliveryTime' | 'distance' | 'newest',
+        isFeatured: isFeatured === 'true',
+        isNew: isNew === 'true',
+        search: search as string,
+        radius: radius ? parseFloat(radius as string) : undefined,
+        isOpen: isOpen !== undefined ? isOpen === 'true' : undefined
+      };
       
+      const restaurants = await storage.getRestaurants(filters);
       res.json(restaurants);
     } catch (error) {
-      res.status(500).json({ error: "Failed to fetch restaurants" });
+      console.error('Error fetching restaurants:', error);
+      res.status(500).json({ message: "Failed to fetch restaurants" });
     }
   });
 
   app.get("/api/restaurants/:id", async (req, res) => {
     try {
       const { id } = req.params;
-      const restaurant = await dbStorage.getRestaurant(id);
+      const restaurant = await storage.getRestaurant(id);
       if (!restaurant) {
-        return res.status(404).json({ error: "Restaurant not found" });
+        return res.status(404).json({ message: "Restaurant not found" });
       }
       res.json(restaurant);
     } catch (error) {
-      res.status(500).json({ error: "Failed to fetch restaurant" });
+      res.status(500).json({ message: "Failed to fetch restaurant" });
     }
   });
 
-  app.post("/api/restaurants", async (req, res) => {
-    try {
-      const validatedData = insertRestaurantSchema.parse(req.body);
-      const restaurant = await dbStorage.createRestaurant(validatedData);
-      res.status(201).json(restaurant);
-    } catch (error) {
-      res.status(400).json({ error: "Invalid restaurant data" });
-    }
-  });
-
-  app.put("/api/restaurants/:id", async (req, res) => {
-    try {
-      const { id } = req.params;
-      const validatedData = insertRestaurantSchema.partial().parse(req.body);
-      const restaurant = await dbStorage.updateRestaurant(id, validatedData);
-      if (!restaurant) {
-        return res.status(404).json({ error: "Restaurant not found" });
-      }
-      res.json(restaurant);
-    } catch (error) {
-      res.status(400).json({ error: "Invalid restaurant data" });
-    }
-  });
-
-  app.delete("/api/restaurants/:id", async (req, res) => {
-    try {
-      const { id } = req.params;
-      const success = await dbStorage.deleteRestaurant(id);
-      if (!success) {
-        return res.status(404).json({ error: "Restaurant not found" });
-      }
-      res.status(204).send();
-    } catch (error) {
-      res.status(500).json({ error: "Failed to delete restaurant" });
-    }
-  });
+  // Restaurant write operations are only available through /api/admin/restaurants
 
   // Menu Items
+  app.get("/api/products", async (req, res) => {
+    try {
+      const products = await storage.getAllMenuItems();
+      res.json(products);
+    } catch (error) {
+      res.status(500).json({ message: "Failed to fetch products" });
+    }
+  });
+
+  app.get("/api/products/featured", async (req, res) => {
+    try {
+      const products = await storage.getAllMenuItems();
+      const featured = products.filter(p => p.isFeatured);
+      res.json(featured.length > 0 ? featured : products.slice(0, 12));
+    } catch (error) {
+      res.status(500).json({ message: "Failed to fetch featured products" });
+    }
+  });
+
+  app.get("/api/products/:id", async (req, res) => {
+    try {
+      const { id } = req.params;
+      const item = await storage.getMenuItem(id);
+      if (!item) {
+        return res.status(404).json({ message: "المنتج غير موجود" });
+      }
+      res.json(item);
+    } catch (error) {
+      res.status(500).json({ message: "فشل في جلب بيانات المنتج" });
+    }
+  });
+
   app.get("/api/restaurants/:restaurantId/menu", async (req, res) => {
     try {
       const { restaurantId } = req.params;
-      const menuItems = await dbStorage.getMenuItems(restaurantId);
-      res.json(menuItems);
+      const allItems = await storage.getMenuItems(restaurantId);
+      res.json({ allItems });
     } catch (error) {
-      res.status(500).json({ error: "Failed to fetch menu items" });
+      res.status(500).json({ message: "Failed to fetch menu items" });
     }
   });
 
-  app.post("/api/menu-items", async (req, res) => {
-    try {
-      const validatedData = insertMenuItemSchema.parse(req.body);
-      const menuItem = await dbStorage.createMenuItem(validatedData);
-      res.status(201).json(menuItem);
-    } catch (error) {
-      res.status(400).json({ error: "Invalid menu item data" });
-    }
-  });
+  // Menu item write operations are only available through /api/admin/menu-items
 
-  app.put("/api/menu-items/:id", async (req, res) => {
-    try {
-      const { id } = req.params;
-      const validatedData = insertMenuItemSchema.partial().parse(req.body);
-      const menuItem = await dbStorage.updateMenuItem(id, validatedData);
-      if (!menuItem) {
-        return res.status(404).json({ error: "Menu item not found" });
-      }
-      res.json(menuItem);
-    } catch (error) {
-      res.status(400).json({ error: "Invalid menu item data" });
-    }
-  });
-
-  app.delete("/api/menu-items/:id", async (req, res) => {
-    try {
-      const { id } = req.params;
-      const success = await dbStorage.deleteMenuItem(id);
-      if (!success) {
-        return res.status(404).json({ error: "Menu item not found" });
-      }
-      res.status(204).send();
-    } catch (error) {
-      res.status(500).json({ error: "Failed to delete menu item" });
-    }
-  });
-
-  // Orders
-  app.get("/api/orders", async (req, res) => {
-    try {
-      const { restaurantId, status } = req.query;
-      let orders;
-      
-      if (restaurantId) {
-        orders = await dbStorage.getOrdersByRestaurant(restaurantId as string);
-      } else {
-        orders = await dbStorage.getOrders();
-      }
-      
-      // Filter by status if provided
-      if (status && status !== 'all') {
-        orders = orders.filter(order => order.status === status);
-      }
-      
-      res.json(orders);
-    } catch (error) {
-      res.status(500).json({ error: "Failed to fetch orders" });
-    }
-  });
-
-  app.get("/api/orders/:id", async (req, res) => {
-    try {
-      const { id } = req.params;
-      const order = await dbStorage.getOrder(id);
-      if (!order) {
-        return res.status(404).json({ error: "Order not found" });
-      }
-      res.json(order);
-    } catch (error) {
-      res.status(500).json({ error: "Failed to fetch order" });
-    }
-  });
-
-  app.post("/api/orders", async (req, res) => {
-    try {
-      const validatedData = insertOrderSchema.parse(req.body);
-      const order = await dbStorage.createOrder(validatedData);
-      res.status(201).json(order);
-    } catch (error) {
-      res.status(400).json({ error: "Invalid order data" });
-    }
-  });
-
-  app.put("/api/orders/:id", async (req, res) => {
-    try {
-      const { id } = req.params;
-      const validatedData = insertOrderSchema.partial().parse(req.body);
-      const order = await dbStorage.updateOrder(id, validatedData);
-      if (!order) {
-        return res.status(404).json({ error: "Order not found" });
-      }
-      res.json(order);
-    } catch (error) {
-      res.status(400).json({ error: "Invalid order data" });
-    }
-  });
-
-  // Drivers
-  app.get("/api/drivers", async (req, res) => {
-    try {
-      const { available } = req.query;
-      let drivers;
-      
-      if (available === 'true') {
-        drivers = await dbStorage.getAvailableDrivers();
-      } else {
-        drivers = await dbStorage.getDrivers();
-      }
-      
-      res.json(drivers);
-    } catch (error) {
-      res.status(500).json({ error: "Failed to fetch drivers" });
-    }
-  });
-
-  app.get("/api/drivers/:id", async (req, res) => {
-    try {
-      const { id } = req.params;
-      const driver = await dbStorage.getDriver(id);
-      if (!driver) {
-        return res.status(404).json({ error: "Driver not found" });
-      }
-      res.json(driver);
-    } catch (error) {
-      res.status(500).json({ error: "Failed to fetch driver" });
-    }
-  });
-
-  app.post("/api/drivers", async (req, res) => {
-    try {
-      const driverData = { ...req.body, userType: "driver" };
-      const driver = await dbStorage.createDriver(driverData);
-      res.status(201).json(driver);
-    } catch (error) {
-      res.status(400).json({ error: "Invalid driver data" });
-    }
-  });
-
-  app.put("/api/drivers/:id", async (req, res) => {
-    try {
-      const { id } = req.params;
-      const updateData = req.body;
-      const driver = await dbStorage.updateDriver(id, updateData);
-      if (!driver) {
-        return res.status(404).json({ error: "Driver not found" });
-      }
-      res.json(driver);
-    } catch (error) {
-      res.status(400).json({ error: "Invalid driver data" });
-    }
-  });
-
-  app.delete("/api/drivers/:id", async (req, res) => {
-    try {
-      const { id } = req.params;
-      const success = await dbStorage.deleteDriver(id);
-      if (!success) {
-        return res.status(404).json({ error: "Driver not found" });
-      }
-      res.status(204).send();
-    } catch (error) {
-      res.status(500).json({ error: "Failed to delete driver" });
-    }
-  });
+  // Orders routes are now handled by the dedicated orders router in routes/orders.ts at the bottom
+  // Drivers routes are now handled by the dedicated driver router in routes/driver.ts at the bottom
 
   // Special Offers
   app.get("/api/special-offers", async (req, res) => {
     try {
+      log("🔍 Storage type: " + storage.constructor.name);
+      
+      // Disable caching to see changes
+      res.set('Cache-Control', 'no-store');
+      
       const { active } = req.query;
       let offers;
       
-      if (active === 'true') {
-        offers = await dbStorage.getActiveSpecialOffers();
+      // Default to active offers for homepage
+      if (active === 'false') {
+        offers = await storage.getSpecialOffers();
       } else {
-        offers = await dbStorage.getSpecialOffers();
+        offers = await storage.getActiveSpecialOffers();
       }
       
+      log("📊 Found offers: " + offers.length + " offers");
       res.json(offers);
     } catch (error) {
-      res.status(500).json({ error: "Failed to fetch special offers" });
+      const errorMessage = error instanceof Error ? error.message : String(error);
+      log("خطأ في جلب العروض الخاصة: " + errorMessage);
+      res.status(500).json({ message: "Failed to fetch special offers" });
     }
   });
 
-  app.post("/api/special-offers", async (req, res) => {
+  // Special offer write operations are only available through /api/admin/special-offers
+
+  // Favorites Routes
+  app.get("/api/favorites/restaurants/:userId", async (req, res) => {
     try {
-      const validatedData = insertSpecialOfferSchema.parse(req.body);
-      const offer = await dbStorage.createSpecialOffer(validatedData);
-      res.status(201).json(offer);
+      const { userId } = req.params;
+      const favorites = await storage.getFavoriteRestaurants(userId);
+      res.json(favorites);
     } catch (error) {
-      res.status(400).json({ error: "Invalid special offer data" });
+      res.status(500).json({ message: "Failed to fetch favorite restaurants" });
     }
   });
 
-  app.put("/api/special-offers/:id", async (req, res) => {
+  app.get("/api/favorites/products/:userId", async (req, res) => {
     try {
-      const { id } = req.params;
-      const validatedData = insertSpecialOfferSchema.partial().parse(req.body);
-      const offer = await dbStorage.updateSpecialOffer(id, validatedData);
-      if (!offer) {
-        return res.status(404).json({ error: "Special offer not found" });
+      const { userId } = req.params;
+      const favorites = await storage.getFavoriteProducts(userId);
+      res.json(favorites);
+    } catch (error) {
+      res.status(500).json({ message: "Failed to fetch favorite products" });
+    }
+  });
+
+  app.post("/api/favorites", async (req, res) => {
+    try {
+      const validatedData = insertFavoritesSchema.parse(req.body);
+      const favorite = await storage.addToFavorites(validatedData);
+      res.status(201).json(favorite);
+    } catch (error) {
+      res.status(400).json({ message: "Invalid favorite data" });
+    }
+  });
+
+  app.delete("/api/favorites", async (req, res) => {
+    try {
+      const { userId, restaurantId, menuItemId } = req.query;
+      if (!userId) {
+        return res.status(400).json({ message: "User ID is required" });
       }
-      res.json(offer);
+      const success = await storage.removeFromFavorites(userId as string, restaurantId as string, menuItemId as string);
+      if (success) {
+        res.status(204).send();
+      } else {
+        res.status(404).json({ message: "Favorite not found" });
+      }
     } catch (error) {
-      res.status(400).json({ error: "Invalid special offer data" });
+      res.status(500).json({ message: "Failed to remove favorite" });
     }
   });
 
-  app.delete("/api/special-offers/:id", async (req, res) => {
+  app.get("/api/favorites/check", async (req, res) => {
     try {
-      const { id } = req.params;
-      const success = await dbStorage.deleteSpecialOffer(id);
-      if (!success) {
-        return res.status(404).json({ error: "Special offer not found" });
+      const { userId, restaurantId, menuItemId } = req.query;
+      if (!userId) {
+        return res.status(400).json({ message: "User ID is required" });
       }
-      res.status(204).send();
+      
+      let isFavorite = false;
+      if (restaurantId) {
+        isFavorite = await storage.isRestaurantFavorite(userId as string, restaurantId as string);
+      } else if (menuItemId) {
+        isFavorite = await storage.isProductFavorite(userId as string, menuItemId as string);
+      }
+      
+      res.json({ isFavorite });
     } catch (error) {
-      res.status(500).json({ error: "Failed to delete special offer" });
+      res.status(500).json({ message: "Failed to check favorite" });
+    }
+  });
+
+  // ===========================================
+  // Bootstrap endpoint - يُجمّع كل البيانات الأولية للتطبيق في طلب واحد
+  // يُستهلك من شاشة السبلاش لتحضير الكاش قبل دخول المستخدم للتطبيق
+  // ===========================================
+  app.get("/api/bootstrap", async (req, res) => {
+    try {
+      const { phone, customerId } = req.query as { phone?: string; customerId?: string };
+
+      // تشغيل كل الاستعلامات بالتوازي لخفض زمن الاستجابة
+      const [
+        uiSettings,
+        categories,
+        restaurants,
+        specialOffers,
+        paymentMethodsRaw,
+      ] = await Promise.all([
+        storage.getUiSettings().catch(() => []),
+        storage.getCategories().catch(() => []),
+        storage.getRestaurants({}).catch(() => []),
+        storage.getActiveSpecialOffers().catch(() => []),
+        (storage as any).getActivePaymentMethods?.().catch(() => []) ?? Promise.resolve([]),
+      ]);
+
+      // إثراء طرق الدفع بالمستندات (نفس سلوك /api/payment-methods)
+      const paymentMethods = await Promise.all(
+        (paymentMethodsRaw || []).map(async (m: any) => {
+          try {
+            const docs = await (storage as any).getPaymentMethodDocuments?.(m.id) ?? [];
+            return { ...m, documents: docs };
+          } catch {
+            return { ...m, documents: [] };
+          }
+        })
+      );
+
+      // بيانات خاصة بالعميل (اختيارية حسب المعرّف المُمرَّر)
+      let customerData: {
+        addresses: any[];
+        orders: any[];
+        notifications: any[];
+        unreadCount: number;
+      } | null = null;
+
+      if (phone || customerId) {
+        const [addresses, orders, allNotifs] = await Promise.all([
+          customerId
+            ? (storage as any).getUserAddresses?.(customerId).catch(() => []) ?? Promise.resolve([])
+            : Promise.resolve([]),
+          (phone || customerId)
+            ? storage.getOrdersByCustomer(phone || '', customerId as any).catch(() => [])
+            : Promise.resolve([]),
+          (storage as any).getNotifications?.('customer').catch(() => []) ?? Promise.resolve([]),
+        ]);
+
+        const myNotifications = (allNotifs || []).filter((n: any) => {
+          if (!n.recipientId || n.recipientId === 'all') return true;
+          if (customerId && n.recipientId === customerId) return true;
+          if (phone && n.recipientId === phone) return true;
+          return false;
+        });
+        myNotifications.sort((a: any, b: any) =>
+          new Date(b.createdAt).getTime() - new Date(a.createdAt).getTime()
+        );
+
+        customerData = {
+          addresses: addresses || [],
+          orders: orders || [],
+          notifications: myNotifications.slice(0, 30),
+          unreadCount: myNotifications.filter((n: any) => !n.isRead).length,
+        };
+      }
+
+      res.set('Cache-Control', 'no-store');
+      res.json({
+        uiSettings,
+        categories,
+        restaurants,
+        specialOffers,
+        paymentMethods,
+        customer: customerData,
+        serverTime: Date.now(),
+      });
+    } catch (error) {
+      console.error('Error in /api/bootstrap:', error);
+      res.status(500).json({ message: 'Failed to load bootstrap data' });
     }
   });
 
   // UI Settings Routes
   app.get("/api/ui-settings", async (req, res) => {
     try {
-      const settings = await dbStorage.getUiSettings();
+      const settings = await storage.getUiSettings();
       res.json(settings);
     } catch (error) {
       console.error('خطأ في جلب إعدادات الواجهة:', error);
-      res.status(500).json({ error: "Failed to fetch UI settings" });
+      res.status(500).json({ message: "Failed to fetch UI settings" });
     }
   });
 
   app.get("/api/ui-settings/:key", async (req, res) => {
     try {
       const { key } = req.params;
-      const setting = await dbStorage.getUiSetting(key);
+      const setting = await storage.getUiSetting(key);
       if (!setting) {
-        return res.status(404).json({ error: "الإعداد غير موجود" });
+        return res.status(404).json({ message: "الإعداد غير موجود" });
       }
       res.json(setting);
     } catch (error) {
       console.error('خطأ في جلب إعداد الواجهة:', error);
-      res.status(500).json({ error: "Failed to fetch UI setting" });
+      res.status(500).json({ message: "Failed to fetch UI setting" });
     }
   });
 
@@ -495,18 +452,701 @@ export async function registerRoutes(app: Express): Promise<Server> {
       const { value } = req.body;
       
       if (!value) {
-        return res.status(400).json({ error: "قيمة الإعداد مطلوبة" });
+        return res.status(400).json({ message: "قيمة الإعداد مطلوبة" });
       }
 
-      const updated = await dbStorage.updateUiSetting(key, value);
+      const updated = await storage.updateUiSetting(key, value);
       if (!updated) {
-        return res.status(404).json({ error: "الإعداد غير موجود" });
+        return res.status(404).json({ message: "الإعداد غير موجود" });
       }
       
+      // بث التحديث عبر WebSocket
+      broadcastSettingsChanged(key);
+
       res.json(updated);
     } catch (error) {
       console.error('خطأ في تحديث إعداد الواجهة:', error);
-      res.status(500).json({ error: "Failed to update UI setting" });
+      res.status(500).json({ message: "Failed to update UI setting" });
+    }
+  });
+
+  // Order Tracking Route
+  app.get("/api/orders/:id/track", async (req, res) => {
+    try {
+      const { id } = req.params;
+      let orderData = await storage.getOrder(id);
+      let isWaselLi = false;
+
+      // If not found in regular orders, check wasalni requests
+      if (!orderData) {
+        const wasalniOrder = await storage.getWasalniRequest(id);
+        if (wasalniOrder) {
+          isWaselLi = true;
+          // Map wasalni structure to order structure for tracking page
+          orderData = {
+            ...wasalniOrder,
+            orderNumber: wasalniOrder.requestNumber,
+            deliveryAddress: wasalniOrder.toAddress,
+            customerLocationLat: wasalniOrder.toLat,
+            customerLocationLng: wasalniOrder.toLng,
+            total: wasalniOrder.estimatedFee,
+            items: [], // Wasalni has no items list usually
+            isWaselLi: true,
+            pickupAddress: wasalniOrder.fromAddress,
+            pickupLocationLat: wasalniOrder.fromLat,
+            pickupLocationLng: wasalniOrder.fromLng,
+            waselLiItemType: wasalniOrder.orderType,
+            restaurantName: "وصل لي"
+          };
+        }
+      }
+      
+      if (!orderData) {
+        return res.status(404).json({ error: "الطلب غير موجود" });
+      }
+
+      // Fetch actual tracking from database
+      const trackingEntries = await storage.getOrderTracking(id);
+      
+      // If no tracking entries exist, create a fallback based on status
+      let tracking = trackingEntries.map((t, index) => ({
+        id: t.id || String(index + 1),
+        status: t.status,
+        message: t.message,
+        timestamp: t.createdAt,
+        createdByType: t.createdByType
+      }));
+
+      if (tracking.length === 0) {
+        const baseTime = new Date(orderData.createdAt);
+        
+        if (orderData.status === 'pending' || orderData.status === 'confirmed' || orderData.status === 'preparing' || 
+            orderData.status === 'on_way' || orderData.status === 'delivered') {
+          tracking.push({
+            id: '1',
+            status: 'pending',
+            message: isWaselLi ? 'تم استلام طلب وصل لي' : 'تم استلام الطلب',
+            timestamp: baseTime,
+            createdByType: 'system'
+          });
+        }
+        
+        if (orderData.status === 'confirmed' || orderData.status === 'preparing' || orderData.status === 'on_way' || orderData.status === 'delivered') {
+          tracking.push({
+            id: '2',
+            status: 'confirmed',
+            message: isWaselLi ? 'تم قبول طلبك وجاري تعيين سائق' : 'تم تأكيد الطلب من المطعم',
+            timestamp: new Date(baseTime.getTime() + 5 * 60000),
+            createdByType: isWaselLi ? 'system' : 'restaurant'
+          });
+        }
+        
+        if (orderData.status === 'preparing' || orderData.status === 'on_way' || orderData.status === 'delivered') {
+          tracking.push({
+            id: '3',
+            status: 'preparing',
+            message: isWaselLi ? 'السائق في الطريق لنقطة الاستلام' : 'جاري تحضير الطلب',
+            timestamp: new Date(baseTime.getTime() + 10 * 60000),
+            createdByType: isWaselLi ? 'driver' : 'restaurant'
+          });
+        }
+        
+        if (orderData.status === 'on_way' || orderData.status === 'delivered') {
+          tracking.push({
+            id: '4',
+            status: 'on_way',
+            message: isWaselLi ? 'السائق استلم الغرض وهو في الطريق إليك' : 'الطلب في الطريق إليك',
+            timestamp: new Date(baseTime.getTime() + 20 * 60000),
+            createdByType: 'driver'
+          });
+        }
+        
+        if (orderData.status === 'delivered') {
+          tracking.push({
+            id: '5',
+            status: 'delivered',
+            message: isWaselLi ? 'تم توصيل طلب وصل لي بنجاح' : 'تم تسليم الطلب بنجاح',
+            timestamp: new Date(baseTime.getTime() + 35 * 60000),
+            createdByType: 'driver'
+          });
+        }
+      }
+      
+      // Parse items if they're stored as JSON string
+      let parsedItems = [];
+      try {
+        parsedItems = typeof orderData.items === 'string' ? JSON.parse(orderData.items) : orderData.items;
+      } catch (e) {
+        parsedItems = [];
+      }
+
+      res.json({
+        order: {
+          ...orderData,
+          items: parsedItems,
+          total: parseFloat(orderData.total || '0')
+        },
+        tracking
+      });
+    } catch (error) {
+      console.error("خطأ في تتبع الطلب:", error);
+      res.status(500).json({ error: "خطأ في الخادم" });
+    }
+  });
+
+  // Driver-specific order endpoints are handled in routes/orders.ts
+
+  app.get("/api/drivers/:id/orders", async (req, res) => {
+    try {
+      const { id } = req.params;
+      const { status } = req.query;
+      
+      // Get all orders and filter by driver
+      const allOrders = await storage.getOrders();
+      let driverOrders = allOrders.filter(order => order.driverId === id);
+      
+      if (status) {
+        driverOrders = driverOrders.filter(order => order.status === status);
+      }
+      
+      // Sort by creation date (newest first)
+      driverOrders.sort((a, b) => new Date(b.createdAt).getTime() - new Date(a.createdAt).getTime());
+      
+      res.json(driverOrders);
+    } catch (error) {
+      res.status(500).json({ message: "Failed to fetch driver orders" });
+    }
+  });
+
+  app.put("/api/drivers/:id/status", async (req, res) => {
+    try {
+      const { id } = req.params;
+      const { status, latitude, longitude } = req.body;
+      
+      const driver = await storage.updateDriver(id, {
+        isAvailable: status === 'available',
+        currentLocation: latitude && longitude ? `${latitude},${longitude}` : undefined,
+      });
+      
+      if (!driver) {
+        return res.status(404).json({ message: "Driver not found" });
+      }
+      
+      res.json(driver);
+    } catch (error) {
+      res.status(400).json({ message: "Failed to update driver status" });
+    }
+  });
+
+  // Driver dashboard routes
+
+  app.get("/api/drivers/:id/stats", async (req, res) => {
+    try {
+      const { id } = req.params;
+      const { period = 'today' } = req.query;
+      
+      // Validate UUID format (supports both with and without hyphens)
+      const uuidRe = /^[0-9a-fA-F]{8}-?[0-9a-fA-F]{4}-?[0-9a-fA-F]{4}-?[0-9a-fA-F]{4}-?[0-9a-fA-F]{12}$/i;
+      if (!id || id.length < 8 || !uuidRe.test(id.replace(/-/g, ''))) {
+        return res.status(400).json({ message: "Invalid driver id format" });
+      }
+      
+      // Check if driver exists
+      const driver = await storage.getDriver(id);
+      if (!driver) {
+        // Return zero stats for non-existent driver to keep client stable
+        const startDate = new Date();
+        startDate.setHours(0, 0, 0, 0);
+        return res.json({
+          totalOrders: 0,
+          totalEarnings: 0,
+          avgOrderValue: 0,
+          period,
+          startDate,
+          endDate: new Date()
+        });
+      }
+      
+      let startDate: Date;
+      const endDate = new Date();
+      
+      switch (period) {
+        case 'today':
+          startDate = new Date();
+          startDate.setHours(0, 0, 0, 0);
+          break;
+        case 'week':
+          startDate = new Date();
+          startDate.setDate(startDate.getDate() - 7);
+          break;
+        case 'month':
+          startDate = new Date();
+          startDate.setMonth(startDate.getMonth() - 1);
+          break;
+        default:
+          startDate = new Date();
+          startDate.setHours(0, 0, 0, 0);
+      }
+      
+      // Get all orders and filter by driver and status
+      const allOrders = await storage.getOrders();
+      const driverOrders = allOrders.filter(order => 
+        order.driverId === id && 
+        order.status === 'delivered' &&
+        new Date(order.createdAt) >= startDate &&
+        new Date(order.createdAt) <= endDate
+      );
+      
+      const totalEarnings = driverOrders.reduce((sum: number, order: any) => {
+        // Prefer driverEarnings for driver-specific calculations
+        const amount = order.driverEarnings ?? order.totalAmount ?? order.total ?? 0;
+        return sum + parseFloat(amount.toString() || '0');
+      }, 0);
+      
+      const stats = {
+        totalOrders: driverOrders.length,
+        totalEarnings,
+        avgOrderValue: driverOrders.length > 0 ? totalEarnings / driverOrders.length : 0,
+        period,
+        startDate,
+        endDate
+      };
+      
+      res.json(stats);
+    } catch (error) {
+      res.status(500).json({ message: "Failed to fetch driver stats" });
+    }
+  });
+
+  // Available orders for drivers are handled in routes/orders.ts
+
+  // ================= RESTAURANT SECTIONS API =================
+  app.get("/api/restaurants/:restaurantId/sections", async (req, res) => {
+    try {
+      const { restaurantId } = req.params;
+      const sections = await storage.getRestaurantSections(restaurantId);
+      res.json(sections);
+    } catch (error) {
+      res.status(500).json({ message: "Failed to fetch sections" });
+    }
+  });
+
+  // ================= RATINGS & REVIEWS API - DISABLED =================
+  // Ratings functionality temporarily disabled - would require additional database methods
+
+  // ================= NOTIFICATIONS API =================
+  app.get("/api/notifications", async (req, res) => {
+    try {
+      const { recipientType, recipientId, unread } = req.query;
+      const notifications = await storage.getNotifications(
+        recipientType as string, 
+        recipientId as string, 
+        unread === 'true'
+      );
+      res.json(notifications);
+    } catch (error) {
+      res.status(500).json({ message: "Failed to fetch notifications" });
+    }
+  });
+
+  app.post("/api/notifications", async (req, res) => {
+    try {
+      const validatedData = insertNotificationSchema.parse(req.body);
+      const notification = await storage.createNotification(validatedData);
+      res.status(201).json(notification);
+    } catch (error) {
+      res.status(400).json({ message: "Invalid notification data" });
+    }
+  });
+
+  app.put("/api/notifications/:id/read", async (req, res) => {
+    try {
+      const { id } = req.params;
+      const notification = await storage.markNotificationAsRead(id);
+      if (!notification) {
+        return res.status(404).json({ message: "Notification not found" });
+      }
+      res.json(notification);
+    } catch (error) {
+      res.status(400).json({ message: "Failed to update notification" });
+    }
+  });
+
+  // ================= WALLET & PAYMENTS API - DISABLED =================
+  // Wallet functionality temporarily disabled - would require additional database methods
+
+  // ================= SYSTEM SETTINGS API - DISABLED =================
+  // System settings functionality temporarily disabled - would require additional database methods
+
+  // ================= RESTAURANT EARNINGS API - DISABLED =================
+  // Restaurant earnings functionality temporarily disabled - would require additional database methods
+
+  // ================= ANALYTICS & REPORTS API - DISABLED =================
+  // Analytics functionality temporarily disabled - would require additional database methods
+
+  // ================= ADVANCED ORDER MANAGEMENT =================
+  app.get("/api/orders/track/:id", async (req, res) => {
+    try {
+      const { id } = req.params;
+      const order = await storage.getOrder(id);
+      if (!order) {
+        return res.status(404).json({ message: "Order not found" });
+      }
+      
+      let driverLocation = null;
+      if (order.driverId) {
+        const driver = await storage.getDriver(order.driverId);
+        if (driver) {
+          driverLocation = driver.currentLocation;
+        }
+      }
+      
+      res.json({
+        ...order,
+        driverLocation
+      });
+    } catch (error) {
+      res.status(500).json({ message: "Failed to track order" });
+    }
+  });
+
+  // Enhanced Search Routes - مسارات البحث المحسنة
+  app.get("/api/search", async (req, res) => {
+    try {
+      const { 
+        q: query, 
+        category, 
+        lat, 
+        lon,
+        sortBy,
+        isFeatured,
+        isNew,
+        radius,
+        type
+      } = req.query;
+      
+      if (!query) {
+        return res.status(400).json({ error: "Query parameter is required" });
+      }
+
+      const userLocation = (lat && lon) ? { lat: parseFloat(lat as string), lon: parseFloat(lon as string) } : undefined;
+      
+      const results: any = {};
+      
+      if (!type || type === 'restaurants') {
+        const filters = {
+          search: query as string,
+          categoryId: category as string,
+          sortBy: sortBy as 'name' | 'rating' | 'deliveryTime' | 'distance' | 'newest',
+          isFeatured: isFeatured === 'true',
+          isNew: isNew === 'true',
+          userLatitude: userLocation?.lat,
+          userLongitude: userLocation?.lon,
+          radius: radius ? parseFloat(radius as string) : undefined
+        };
+        results.restaurants = await storage.getRestaurants(filters);
+      }
+      
+      if (!type || type === 'categories') {
+        results.categories = await storage.searchCategories(query as string);
+      }
+      
+      if (!type || type === 'menu-items') {
+        results.menuItems = await storage.searchMenuItemsAdvanced(query as string);
+      }
+      
+      const total = (results.restaurants?.length || 0) + 
+                   (results.categories?.length || 0) + 
+                   (results.menuItems?.length || 0);
+
+      res.json({ ...results, total });
+    } catch (error) {
+      console.error("Search error:", error);
+      res.status(500).json({ error: "Internal server error" });
+    }
+  });
+  
+  // Cart endpoints - مسارات السلة
+  app.get("/api/cart/:userId", async (req, res) => {
+    try {
+      const { userId } = req.params;
+      const cartItems = await storage.getCartItems(userId);
+      res.json(cartItems);
+    } catch (error) {
+      console.error('Error fetching cart:', error);
+      res.status(500).json({ message: 'Failed to fetch cart items' });
+    }
+  });
+
+  app.post("/api/cart", async (req, res) => {
+    try {
+      const validatedData = insertCartSchema.parse(req.body);
+      const newItem = await storage.addToCart(validatedData);
+      res.status(201).json(newItem);
+    } catch (error) {
+      console.error('Error adding to cart:', error);
+      res.status(500).json({ message: 'Failed to add item to cart' });
+    }
+  });
+
+  app.put("/api/cart/:cartId", async (req, res) => {
+    try {
+      const { cartId } = req.params;
+      const { quantity } = req.body;
+      
+      if (quantity <= 0) {
+        await storage.removeFromCart(cartId);
+        res.json({ message: 'Item removed from cart' });
+      } else {
+        const updatedItem = await storage.updateCartItem(cartId, quantity);
+        res.json(updatedItem);
+      }
+    } catch (error) {
+      console.error('Error updating cart item:', error);
+      res.status(500).json({ message: 'Failed to update cart item' });
+    }
+  });
+
+  app.delete("/api/cart/:cartId", async (req, res) => {
+    try {
+      const { cartId } = req.params;
+      const success = await storage.removeFromCart(cartId);
+      
+      if (success) {
+        res.json({ message: 'Item removed from cart' });
+      } else {
+        res.status(404).json({ message: 'Cart item not found' });
+      }
+    } catch (error) {
+      console.error('Error removing from cart:', error);
+      res.status(500).json({ message: 'Failed to remove item from cart' });
+    }
+  });
+
+  app.delete("/api/cart/clear/:userId", async (req, res) => {
+    try {
+      const { userId } = req.params;
+      const success = await storage.clearCart(userId);
+      
+      if (success) {
+        res.json({ message: 'Cart cleared successfully' });
+      } else {
+        res.status(404).json({ message: 'No cart items found for user' });
+      }
+    } catch (error) {
+      console.error('Error clearing cart:', error);
+      res.status(500).json({ message: 'Failed to clear cart' });
+    }
+  });
+
+  // Favorites endpoints - مسارات المفضلة
+  app.get("/api/favorites/:userId", async (req, res) => {
+    try {
+      const { userId } = req.params;
+      const favorites = await storage.getFavoriteRestaurants(userId);
+      res.json(favorites);
+    } catch (error) {
+      console.error('Error fetching favorites:', error);
+      res.status(500).json({ message: 'Failed to fetch favorite restaurants' });
+    }
+  });
+
+  app.post("/api/favorites", async (req, res) => {
+    try {
+      const validatedData = insertFavoritesSchema.parse(req.body);
+      const newFavorite = await storage.addToFavorites(validatedData);
+      res.status(201).json(newFavorite);
+    } catch (error) {
+      console.error('Error adding to favorites:', error);
+      res.status(500).json({ message: 'Failed to add restaurant to favorites' });
+    }
+  });
+
+  app.delete("/api/favorites/:userId/:restaurantId", async (req, res) => {
+    try {
+      const { userId, restaurantId } = req.params;
+      const success = await storage.removeFromFavorites(userId, restaurantId);
+      
+      if (success) {
+        res.json({ message: 'Restaurant removed from favorites' });
+      } else {
+        res.status(404).json({ message: 'Favorite not found' });
+      }
+    } catch (error) {
+      console.error('Error removing from favorites:', error);
+      res.status(500).json({ message: 'Failed to remove restaurant from favorites' });
+    }
+  });
+
+  app.get("/api/favorites/check/:userId/:restaurantId", async (req, res) => {
+    try {
+      const { userId, restaurantId } = req.params;
+      const isFavorite = await storage.isRestaurantFavorite(userId, restaurantId);
+      res.json({ isFavorite });
+    } catch (error) {
+      console.error('Error checking favorite status:', error);
+      res.status(500).json({ message: 'Failed to check favorite status' });
+    }
+  });
+
+  // تم حذف مسارات المصادقة - لا حاجة لها
+  
+  // Register auth routes
+  app.use("/api/auth", authRoutes);
+  
+  // Register admin routes
+  app.use("/api/admin", adminRoutes);
+  
+  // Register customer routes
+  app.use("/api/customer", customerRoutes);
+  
+  // Register driver routes (plural for consistency)
+  app.use("/api/drivers", driverRoutes);
+  
+  // Register orders routes
+  app.use("/api/orders", ordersRoutes);
+
+  // Register delivery fee routes
+  app.use("/api/delivery-fees", deliveryFeeRoutes);
+
+  // Register restaurant accounts routes
+  app.use("/api/restaurant-accounts", restaurantAccountsRouter);
+
+  // Register Flutter API routes
+  app.use("/api/flutter", flutterRouter);
+
+  // Register Wasalni (وصل لي) routes
+  app.use("/api/wasalni", wasalniRouter);
+
+  // Register public routes (including Flutter API)
+  app.use("/api", publicRoutes);
+
+  // Enhanced notifications endpoint
+  app.get("/api/notifications", async (req, res) => {
+    try {
+      const { recipientType, recipientId, unread } = req.query;
+      const notifications = await storage.getNotifications(
+        recipientType as string, 
+        recipientId as string, 
+        unread === 'true'
+      );
+      res.json(notifications);
+    } catch (error) {
+      console.error('Error fetching notifications:', error);
+      res.status(500).json({ message: "Failed to fetch notifications" });
+    }
+  });
+
+  // Customer notifications endpoint - by phone or customerId
+  app.get("/api/notifications/customer", async (req, res) => {
+    try {
+      const { phone, customerId } = req.query;
+      if (!phone && !customerId) {
+        return res.status(400).json({ message: "phone or customerId required" });
+      }
+      // Get ALL customer notifications (both read and unread) - no unread filter
+      const allNotifs = await storage.getNotifications('customer');
+      const filtered = allNotifs.filter((n: any) => {
+        // إذا كان الإشعار موجه لجميع العملاء (recipientId هو null)
+        if (!n.recipientId || n.recipientId === 'all') return true;
+        
+        // إذا كان الإشعار موجه لعميل محدد
+        if (customerId && n.recipientId === customerId) return true;
+        if (phone && n.recipientId === phone) return true;
+        
+        return false;
+      });
+      filtered.sort((a: any, b: any) => new Date(b.createdAt).getTime() - new Date(a.createdAt).getTime());
+      res.json(filtered);
+    } catch (error) {
+      console.error('Error fetching customer notifications:', error);
+      res.status(500).json({ message: "Failed to fetch notifications" });
+    }
+  });
+
+  // Mark all customer notifications as read
+  app.put("/api/notifications/customer/mark-all-read", async (req, res) => {
+    try {
+      const { phone, customerId } = req.body;
+      if (!phone && !customerId) {
+        return res.status(400).json({ message: "phone or customerId required" });
+      }
+      const allNotifs = await storage.getNotifications('customer');
+      const unread = allNotifs.filter((n: any) => {
+        if (n.isRead) return false;
+        if (!n.recipientId || n.recipientId === 'all') return true;
+        if (customerId && n.recipientId === customerId) return true;
+        if (phone && n.recipientId === phone) return true;
+        return false;
+      });
+      await Promise.all(unread.map((n: any) => (storage as any).markNotificationAsRead(n.id)));
+
+      // بث حدث المزامنة لجميع أجهزة العميل لتحديث الشارة فوراً
+      if (global.WS_MANAGER) {
+        const payload = { allRead: true, count: unread.length };
+        if (customerId) global.WS_MANAGER.sendToUser(customerId, 'notifications_updated', payload);
+        if (phone) global.WS_MANAGER.sendToUser(phone, 'notifications_updated', payload);
+      }
+
+      res.json({ success: true, markedCount: unread.length });
+    } catch (error) {
+      console.error('Error marking customer notifications as read:', error);
+      res.status(500).json({ message: "Failed to mark notifications as read" });
+    }
+  });
+
+  // Mark notification as read
+  app.put("/api/notifications/:id/read", async (req, res) => {
+    try {
+      const { id } = req.params;
+      const notification = await (storage as any).markNotificationAsRead(id);
+      if (!notification) {
+        return res.status(404).json({ message: "Notification not found" });
+      }
+
+      // بث المزامنة للمستلم لتحديث الشارة على بقية الأجهزة/التبويبات
+      if (global.WS_MANAGER && notification.recipientId) {
+        const payload = { id: notification.id, isRead: true };
+        if (notification.recipientType === 'driver') {
+          global.WS_MANAGER.sendToDriver(notification.recipientId, 'notifications_updated', payload);
+        } else {
+          global.WS_MANAGER.sendToUser(notification.recipientId, 'notifications_updated', payload);
+        }
+      }
+
+      res.json(notification);
+    } catch (error) {
+      console.error('Error marking notification as read:', error);
+      res.status(500).json({ message: "Failed to update notification" });
+    }
+  });
+
+  // Public Payment Methods Route
+  app.get("/api/payment-methods", async (req, res) => {
+    try {
+      const methods = await (storage as any).getActivePaymentMethods();
+      const methodsWithDocs = await Promise.all(methods.map(async (m: any) => {
+        const docs = await (storage as any).getPaymentMethodDocuments(m.id);
+        return { ...m, documents: docs };
+      }));
+      res.json(methodsWithDocs);
+    } catch (error) {
+      console.error("خطأ في جلب طرق الدفع:", error);
+      res.status(500).json({ error: "خطأ في الخادم" });
+    }
+  });
+
+  // Coupon Validation Route
+  app.post("/api/coupons/validate", async (req, res) => {
+    try {
+      const { code, orderValue, userId, userPhone } = req.body;
+      if (!code) return res.status(400).json({ error: "كود الكوبون مطلوب" });
+      if (!orderValue) return res.status(400).json({ error: "قيمة الطلب مطلوبة" });
+      const result = await (storage as any).validateCoupon(code, parseFloat(orderValue), userId, userPhone);
+      res.json(result);
+    } catch (error) {
+      console.error("خطأ في التحقق من الكوبون:", error);
+      res.status(500).json({ error: "خطأ في الخادم" });
     }
   });
 

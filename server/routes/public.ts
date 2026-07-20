@@ -1,18 +1,64 @@
 import express from "express";
-import { db } from "../db.js";
+import { storage } from "../storage.js";
 import * as schema from "../../shared/schema.js";
 import { eq, desc, and, or, like, sql } from "drizzle-orm";
 
 const router = express.Router();
 
+// التحقق من حالة التطبيق
+router.get("/app-status", async (req, res) => {
+  try {
+    const { opening, closing, status } = req.query;
+    const openingTime = opening as string || '08:00';
+    const closingTime = closing as string || '23:00';
+    const storeStatus = status as string || 'open';
+
+    if (storeStatus === 'closed') {
+      return res.json({ isOpen: false, message: "التطبيق مغلق حالياً من قِبل الإدارة", openingTime });
+    }
+
+    if (storeStatus === 'open') {
+      return res.json({ isOpen: true });
+    }
+
+    const now = new Date();
+    // الحصول على الوقت الحالي بتوقيت اليمن (UTC+3)
+    const yemenTime = new Date(now.getTime() + (3 * 60 * 60 * 1000));
+    const currentTime = yemenTime.toISOString().split('T')[1].slice(0, 5);
+    
+    const timeToMinutes = (t: string) => { 
+      const [h, m] = t.split(':').map(Number); 
+      return h * 60 + m; 
+    };
+    
+    const current = timeToMinutes(currentTime);
+    const open = timeToMinutes(openingTime);
+    const close = timeToMinutes(closingTime);
+    
+    let appIsOpen = close > open 
+      ? (current >= open && current < close) 
+      : (current >= open || current < close);
+
+    if (!appIsOpen) {
+      const isBeforeOpen = current < open;
+      const whenOpen = isBeforeOpen ? `يفتح اليوم الساعة ${openingTime}` : `يفتح غداً الساعة ${openingTime}`;
+      return res.json({ 
+        isOpen: false, 
+        message: `التطبيق مغلق حالياً. ${whenOpen}`,
+        openingTime 
+      });
+    }
+
+    res.json({ isOpen: true });
+  } catch (error) {
+    res.status(500).json({ isOpen: false, message: "خطأ في التحقق من حالة التطبيق" });
+  }
+});
+
 // جلب التصنيفات
 router.get("/categories", async (req, res) => {
   try {
-    const categories = await db.query.categories.findMany({
-      where: eq(schema.categories.isActive, true),
-      orderBy: [schema.categories.sortOrder, schema.categories.name]
-    });
-    
+    const categories = await storage.getCategories();
     res.json(categories);
   } catch (error) {
     console.error("خطأ في جلب التصنيفات:", error);
@@ -23,35 +69,21 @@ router.get("/categories", async (req, res) => {
 // جلب المطاعم
 router.get("/restaurants", async (req, res) => {
   try {
-    const { categoryId, search, page = 1, limit = 20 } = req.query;
-    const offset = (Number(page) - 1) * Number(limit);
-
-    let whereConditions = [];
+    const { categoryId, search } = req.query;
     
-    if (categoryId && categoryId !== 'all') {
-      whereConditions.push(eq(schema.restaurants.categoryId, categoryId as string));
-    }
-    
+    let restaurants;
     if (search) {
-      whereConditions.push(
-        or(
-          like(schema.restaurants.name, `%${search}%`),
-          like(schema.restaurants.description, `%${search}%`)
-        )
-      );
+      restaurants = await storage.searchRestaurants(`%${search}%`, categoryId as string);
+    } else if (categoryId && categoryId !== 'all') {
+      restaurants = await storage.getRestaurantsByCategory(categoryId as string);
+    } else {
+      restaurants = await storage.getRestaurants();
     }
-
-    const restaurants = await db.query.restaurants.findMany({
-      where: and(...whereConditions),
-      limit: Number(limit),
-      offset,
-      orderBy: [schema.restaurants.name]
-    });
 
     res.json(restaurants);
   } catch (error) {
     console.error("خطأ في جلب المطاعم:", error);
-    res.status(500).json({ error: "خطأ في الخادم" });
+    res.status(500).json({ message: "Failed to fetch restaurants" });
   }
 });
 
@@ -60,18 +92,16 @@ router.get("/restaurants/:id", async (req, res) => {
   try {
     const { id } = req.params;
     
-    const restaurant = await db.query.restaurants.findFirst({
-      where: eq(schema.restaurants.id, id)
-    });
+    const restaurant = await storage.getRestaurant(id);
 
     if (!restaurant) {
-      return res.status(404).json({ error: "المطعم غير موجود" });
+      return res.status(404).json({ message: "المطعم غير موجود" });
     }
 
     res.json(restaurant);
   } catch (error) {
     console.error("خطأ في جلب تفاصيل المطعم:", error);
-    res.status(500).json({ error: "خطأ في الخادم" });
+    res.status(500).json({ message: "Failed to fetch restaurant" });
   }
 });
 
@@ -81,61 +111,88 @@ router.get("/restaurants/:id/menu", async (req, res) => {
     const { id } = req.params;
     
     // التحقق من وجود المطعم
-    const restaurant = await db.query.restaurants.findFirst({
-      where: eq(schema.restaurants.id, id)
-    });
+    const restaurant = await storage.getRestaurant(id);
 
     if (!restaurant) {
-      return res.status(404).json({ error: "المطعم غير موجود" });
+      return res.status(404).json({ message: "المطعم غير موجود" });
     }
 
-    // جلب عناصر القائمة مع الأقسام
-    const menuItems = await db.query.menuItems.findMany({
-      where: eq(schema.menuItems.restaurantId, id),
-      orderBy: [schema.menuItems.name]
-    });
-
-    // تجميع العناصر حسب القسم
-    const sections = await db.query.restaurantSections.findMany({
-      orderBy: [schema.restaurantSections.name]
-    });
-
-    const menuBySection = sections.map(section => ({
-      ...section,
-      items: menuItems.filter(item => item.category === section.name)
-    })).filter(section => section.items.length > 0);
+    // جلب عناصر القائمة
+    const menuItems = await storage.getMenuItems(id);
 
     res.json({
       restaurant,
-      menu: menuBySection,
+      menu: [],
       allItems: menuItems
     });
   } catch (error) {
     console.error("خطأ في جلب قائمة المطعم:", error);
-    res.status(500).json({ error: "خطأ في الخادم" });
+    res.status(500).json({ message: "Failed to fetch menu items" });
+  }
+});
+
+// جلب أقسام المطعم
+router.get("/restaurants/:id/sections", async (req, res) => {
+  try {
+    const { id } = req.params;
+    const sections = await storage.getRestaurantSections(id);
+    res.json(sections);
+  } catch (error) {
+    console.error("خطأ في جلب أقسام المطعم:", error);
+    res.status(500).json({ message: "Failed to fetch restaurant sections" });
+  }
+});
+
+// تقييم مطعم مباشرة
+router.post("/restaurants/:id/rate", async (req, res) => {
+  try {
+    const { id } = req.params;
+    const { rating, comment, customerName } = req.body;
+
+    if (!rating || rating < 1 || rating > 5) {
+      return res.status(400).json({ message: "التقييم يجب أن يكون بين 1 و 5" });
+    }
+
+    const restaurant = await storage.getRestaurant(id);
+    if (!restaurant) {
+      return res.status(404).json({ message: "المطعم غير موجود" });
+    }
+
+    const ratingData = {
+      restaurantId: id,
+      customerName: customerName || "زائر",
+      rating: Number(rating),
+      comment: comment || null,
+      isApproved: false,
+    };
+
+    const newRating = await storage.createRating(ratingData as any);
+    res.status(201).json({ success: true, rating: newRating });
+  } catch (error) {
+    console.error("خطأ في إرسال التقييم:", error);
+    res.status(500).json({ message: "فشل في إرسال التقييم" });
   }
 });
 
 // جلب العروض الخاصة
 router.get("/special-offers", async (req, res) => {
   try {
-    const { restaurantId, categoryId } = req.query;
+    console.log("🔍 Storage type:", storage.constructor.name);
     
-    let whereConditions = [eq(schema.specialOffers.isActive, true)];
+    // Disable caching to see changes
+    res.set('Cache-Control', 'no-store');
     
-    if (restaurantId) {
-      whereConditions.push(eq(schema.specialOffers.restaurantId, restaurantId as string));
+    const { active } = req.query;
+    let offers;
+    
+    // Default to active offers for homepage
+    if (active === 'false') {
+      offers = await storage.getSpecialOffers();
+    } else {
+      offers = await storage.getActiveSpecialOffers();
     }
     
-    if (categoryId) {
-      whereConditions.push(eq(schema.specialOffers.categoryId, categoryId as string));
-    }
-
-    const offers = await db.query.specialOffers.findMany({
-      where: and(...whereConditions),
-      orderBy: [desc(schema.specialOffers.createdAt)]
-    });
-
+    console.log("📊 Found offers:", offers.length, offers);
     res.json(offers);
   } catch (error) {
     console.error("خطأ في جلب العروض الخاصة:", error);
@@ -234,41 +291,132 @@ router.get("/search", async (req, res) => {
     const { q, type = 'all' } = req.query;
     
     if (!q) {
-      return res.json({ restaurants: [], menuItems: [] });
+      return res.json({ restaurants: [], categories: [], menuItems: [] });
     }
 
     const searchTerm = `%${q}%`;
-    let results: any = {};
+    let results: any = { restaurants: [], categories: [], menuItems: [] };
 
     if (type === 'all' || type === 'restaurants') {
-      results.restaurants = await db.query.restaurants.findMany({
-        where: and(
-          eq(schema.restaurants.isActive, true),
-          or(
-            like(schema.restaurants.name, searchTerm),
-            like(schema.restaurants.description, searchTerm)
-          )
-        ),
-        limit: 10
-      });
+      results.restaurants = await storage.searchRestaurants(searchTerm);
+    }
+
+    if (type === 'all' || type === 'categories') {
+      results.categories = await storage.searchCategories(searchTerm);
     }
 
     if (type === 'all' || type === 'menu') {
-      results.menuItems = await db.query.menuItems.findMany({
-        where: and(
-          or(
-            like(schema.menuItems.name, searchTerm),
-            like(schema.menuItems.description, searchTerm)
-          )
-        ),
-        limit: 20
-      });
+      results.menuItems = await storage.searchMenuItems(searchTerm);
     }
 
     res.json(results);
   } catch (error) {
     console.error("خطأ في البحث:", error);
-    res.status(500).json({ error: "خطأ في الخادم" });
+    res.status(500).json({ message: "Failed to search" });
+  }
+});
+
+// التحقق من صحة الكوبون - للعملاء
+router.post("/coupons/validate", async (req, res) => {
+  try {
+    const { code, orderValue, categoryIds } = req.body;
+    if (!code) return res.status(400).json({ valid: false, message: "كود الكوبون مطلوب" });
+
+    const result = await storage.validateCoupon(code, orderValue || 0);
+
+    if (!result.valid) {
+      return res.json(result);
+    }
+
+    // التحقق من تصنيف الكوبون
+    if (result.coupon?.categoryId && categoryIds?.length > 0) {
+      const couponCategoryId = String(result.coupon.categoryId);
+      const cartCategories = categoryIds.map((id: any) => String(id));
+      if (!cartCategories.includes(couponCategoryId)) {
+        return res.json({
+          valid: false,
+          message: "هذا الكوبون مخصص لتصنيف معين لا يوجد في سلتك"
+        });
+      }
+    }
+
+    res.json(result);
+  } catch (error) {
+    console.error("خطأ في التحقق من الكوبون:", error);
+    res.status(500).json({ valid: false, message: "خطأ في التحقق من الكوبون" });
+  }
+});
+
+// ==========================================
+// 📱 Flutter App Configuration API
+// ==========================================
+router.get("/flutter/app-config", async (req, res) => {
+  try {
+    const settingKeys = [
+      'splash_image_url', 'splash_image_url2', 'splash_title', 'splash_subtitle',
+      'splash_background_color', 'splash_duration', 'logo_url', 'app_name',
+      'primary_color', 'secondary_color', 'accent_color', 'store_status',
+      'privacy_policy_text', 'show_splash_screen'
+    ];
+
+    const settings: Record<string, string> = {};
+    for (const key of settingKeys) {
+      try {
+        const setting = await storage.getUiSetting(key);
+        if (setting) settings[key] = String(setting.value ?? '');
+      } catch {}
+    }
+
+    const webAppUrl = process.env.REPLIT_DEV_DOMAIN
+      ? `https://${process.env.REPLIT_DEV_DOMAIN}`
+      : process.env.REPL_SLUG
+        ? `https://${process.env.REPL_SLUG}.${process.env.REPL_OWNER}.repl.co`
+        : process.env.WEB_APP_URL || '';
+
+    res.json({
+      success: true,
+      config: {
+        splashEnabled: settings['show_splash_screen'] !== 'false',
+        splashImageUrl: settings['splash_image_url'] || '',
+        splashImageUrl2: settings['splash_image_url2'] || '',
+        splashTitle: settings['splash_title'] || 'السريع ون',
+        splashSubtitle: settings['splash_subtitle'] || 'متجر الخضار والفواكه',
+        splashBackgroundColor: settings['splash_background_color'] || '#FFFFFF',
+        splashDuration: parseInt(settings['splash_duration'] || '3000'),
+        logoUrl: settings['logo_url'] || '',
+        appName: settings['app_name'] || 'السريع ون',
+        appVersion: '1.0.0',
+        primaryColor: settings['primary_color'] || '#4CAF50',
+        secondaryColor: settings['secondary_color'] || '#FF9800',
+        accentColor: settings['accent_color'] || '#2196F3',
+        webAppUrl: webAppUrl,
+        storeStatus: settings['store_status'] || 'open',
+        privacyPolicyText: settings['privacy_policy_text'] || '',
+      }
+    });
+  } catch (error) {
+    console.error("Flutter config error:", error);
+    res.json({
+      success: false,
+      config: {
+        splashEnabled: true,
+        splashImageUrl: '',
+        splashImageUrl2: '',
+        splashTitle: 'السريع ون',
+        splashSubtitle: 'متجر الخضار والفواكه',
+        splashBackgroundColor: '#FFFFFF',
+        splashDuration: 3000,
+        logoUrl: '',
+        appName: 'السريع ون',
+        appVersion: '1.0.0',
+        primaryColor: '#4CAF50',
+        secondaryColor: '#FF9800',
+        accentColor: '#2196F3',
+        webAppUrl: '',
+        storeStatus: 'open',
+        privacyPolicyText: '',
+      }
+    });
   }
 });
 

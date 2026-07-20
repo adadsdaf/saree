@@ -1985,6 +1985,6 @@ export class MemStorage implements IStorage {
 import { dbStorage } from './db';
 
 // Switch between MemStorage and DatabaseStorage
-const USE_MEMORY_STORAGE = !process.env.DATABASE_URL; // Fallback to memory if DATABASE_URL is not set to prevent startup crashes
+const USE_MEMORY_STORAGE = false; // Set to false to use database - switched for data persistence
 
 export const storage = USE_MEMORY_STORAGE ? new MemStorage() : dbStorage;

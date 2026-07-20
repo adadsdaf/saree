@@ -3,14 +3,6 @@
 ## Project Overview
 A comprehensive food delivery system supporting three user roles: Customers, Drivers, and Administrators. Built as a full-stack TypeScript application with a React frontend and Express backend.
 
-## How to Run
-
-- **Dev server**: `npm run dev` (starts Express + Vite on port 5000). The "Start application" workflow is configured and runs this automatically.
-- **Database schema**: `npm run db:push` (push Drizzle schema to Neon PostgreSQL)
-- **Build**: `npm run build` (Vite frontend + esbuild backend → `dist/`)
-- **Admin panel**: visit `/admin-login` in the app
-- **Database**: Neon PostgreSQL — credentials in `.env` (`DATABASE_URL`)
-
 ## Architecture
 - **Frontend**: React 18 + Vite, Tailwind CSS, Radix UI, TanStack Query, Wouter routing
 - **Backend**: Node.js + Express, Drizzle ORM, PostgreSQL, WebSockets (ws), Passport.js auth

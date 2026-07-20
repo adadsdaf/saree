@@ -1,0 +1,8 @@
+{
+  "name": "SareeOne Delivery",
+  "description": "An integrated delivery system including Client App, Driver App, and Admin Dashboard with a backend server.",
+  "requestFramePermissions": [],
+  "majorCapabilities": [
+    "MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"
+  ]
+}

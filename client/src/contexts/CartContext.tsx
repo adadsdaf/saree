@@ -1,10 +1,6 @@
-import React, { createContext, useContext, useReducer, useEffect, useMemo } from 'react';
+import React, { createContext, useContext, useReducer, useEffect } from 'react';
 import { MenuItem } from '../../../shared/schema.js';
 import { useToast } from '@/hooks/use-toast';
-import { useUiSettings } from './UiSettingsContext';
-import { getAppStatus, canOrderFromRestaurant } from '../utils/restaurantHours';
-import { useQuery } from '@tanstack/react-query';
-import type { Restaurant } from '../../../shared/schema.js';
 
 export interface CartItem extends MenuItem {
   quantity: number;
@@ -18,7 +14,6 @@ interface CartState {
   total: number;
   subtotal: number;
   deliveryFee: number;
-  distance?: number;
 }
 
 type CartAction =
@@ -27,7 +22,6 @@ type CartAction =
   | { type: 'UPDATE_QUANTITY'; itemId: string; quantity: number }
   | { type: 'CLEAR_CART' }
   | { type: 'SET_DELIVERY_FEE'; fee: number }
-  | { type: 'SET_DISTANCE'; distance: number }
   | { type: 'ADD_NOTES'; itemId: string; notes: string }
   | { type: 'RESTORE_CART'; cartState: CartState };
 
@@ -134,13 +128,6 @@ function cartReducer(state: CartState, action: CartAction): CartState {
       };
     }
 
-    case 'SET_DISTANCE': {
-      return {
-        ...state,
-        distance: action.distance,
-      };
-    }
-
     case 'CLEAR_CART':
       return initialState;
 
@@ -161,12 +148,11 @@ function cartReducer(state: CartState, action: CartAction): CartState {
 
 interface CartContextType {
   state: CartState;
-  addItem: (item: MenuItem, restaurantId: string, restaurantName: string) => Promise<void>;
+  addItem: (item: MenuItem, restaurantId: string, restaurantName: string) => void;
   removeItem: (itemId: string) => void;
   updateQuantity: (itemId: string, quantity: number) => void;
   addNotes: (itemId: string, notes: string) => void;
   setDeliveryFee: (fee: number) => void;
-  setDistance: (distance: number) => void;
   clearCart: () => void;
   getItemQuantity: (itemId: string) => number;
 }
@@ -176,14 +162,6 @@ const CartContext = createContext<CartContextType | undefined>(undefined);
 export function CartProvider({ children }: { children: React.ReactNode }) {
   const [state, dispatch] = useReducer(cartReducer, initialState);
   const { toast } = useToast();
-  const { getSetting } = useUiSettings();
-
-  const appStatus = useMemo(() => {
-    const openingTime = getSetting('opening_time') || '08:00';
-    const closingTime = getSetting('closing_time') || '23:00';
-    const storeStatus = getSetting('store_status') || 'open';
-    return getAppStatus(openingTime, closingTime, storeStatus);
-  }, [getSetting]);
 
   // حفظ السلة في localStorage
   useEffect(() => {
@@ -210,38 +188,7 @@ export function CartProvider({ children }: { children: React.ReactNode }) {
     }
   }, []);
 
-  const addItem = async (item: MenuItem, restaurantId: string, restaurantName: string) => {
-    // 1. فحص حالة التطبيق العامة
-    if (!appStatus.isOpen) {
-      toast({
-        title: "عذراً، التطبيق مغلق حالياً",
-        description: "لا يمكنك إضافة منتجات لأن التطبيق مغلق حالياً من قِبل الإدارة.",
-        variant: "destructive",
-      });
-      return;
-    }
-
-    // 2. فحص حالة المتجر إذا كان معروفاً
-    if (restaurantId && restaurantId !== 'unknown') {
-      try {
-        const response = await fetch(`/api/restaurants/${restaurantId}`);
-        if (response.ok) {
-          const restaurant = await response.json();
-          const orderStatus = canOrderFromRestaurant(restaurant, true);
-          if (!orderStatus.canOrder) {
-            toast({
-              title: "المتجر مغلق حالياً",
-              description: orderStatus.message || "عذراً، لا يمكنك الطلب من هذا المتجر لأنه مغلق حالياً.",
-              variant: "destructive",
-            });
-            return;
-          }
-        }
-      } catch (error) {
-        console.error("Error checking restaurant status:", error);
-      }
-    }
-
+  const addItem = (item: MenuItem, restaurantId: string, restaurantName: string) => {
     // التحقق من وجود العنصر في السلة لتحديد نوع الإشعار
     const existingItem = state.items.find(cartItem => cartItem.id === item.id);
     
@@ -279,10 +226,6 @@ export function CartProvider({ children }: { children: React.ReactNode }) {
     dispatch({ type: 'SET_DELIVERY_FEE', fee });
   };
 
-  const setDistance = (distance: number) => {
-    dispatch({ type: 'SET_DISTANCE', distance });
-  };
-
   const clearCart = () => {
     dispatch({ type: 'CLEAR_CART' });
   };
@@ -301,7 +244,6 @@ export function CartProvider({ children }: { children: React.ReactNode }) {
         updateQuantity,
         addNotes,
         setDeliveryFee,
-        setDistance,
         clearCart,
         getItemQuantity,
       }}
